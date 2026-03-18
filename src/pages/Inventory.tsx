@@ -1,0 +1,537 @@
+import { useState, useMemo } from 'react';
+import {
+  useReactTable,
+  getCoreRowModel,
+  getFilteredRowModel,
+  getSortedRowModel,
+  getPaginationRowModel,
+  flexRender,
+  ColumnDef,
+  SortingState,
+  RowSelectionState,
+} from '@tanstack/react-table';
+import { useStore } from '@/contexts/StoreContext';
+import { Product, Category } from '@/types/pos';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Checkbox } from '@/components/ui/checkbox';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+  DialogFooter,
+  DialogDescription,
+} from '@/components/ui/dialog';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import { Badge } from '@/components/ui/badge';
+import { Plus, Trash2, Search, ArrowUpDown, Package, FolderOpen, Edit, X } from 'lucide-react';
+import { ProductForm } from '@/components/inventory/ProductForm';
+import { QuickAddModal } from '@/components/inventory/QuickAddModal';
+import { toast } from 'sonner';
+import { cn } from '@/lib/utils';
+import { formatPKR } from '@/pages/Analytics';
+
+export default function Inventory() {
+  const { products, categories, deleteProducts, addCategory, updateCategory, deleteCategory } = useStore();
+  const [sorting, setSorting] = useState<SortingState>([]);
+  const [globalFilter, setGlobalFilter] = useState('');
+  const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
+  const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
+  const [isQuickAddOpen, setIsQuickAddOpen] = useState(false);
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  
+  // Category management state
+  const [isCategoryDialogOpen, setIsCategoryDialogOpen] = useState(false);
+  const [editingCategory, setEditingCategory] = useState<Category | null>(null);
+  const [categoryForm, setCategoryForm] = useState({ name: '', description: '' });
+  const [deleteCategoryId, setDeleteCategoryId] = useState<string | null>(null);
+
+  const getCategoryName = (categoryId: string) => {
+    return categories.find((c) => c.id === categoryId)?.name || 'Unknown';
+  };
+
+  const getStockStatus = (product: Product) => {
+    if (product.stockQuantity <= 0) return 'critical';
+    if (product.stockQuantity < product.lowStockThreshold) return 'low';
+    return 'ok';
+  };
+
+  const columns: ColumnDef<Product>[] = useMemo(
+    () => [
+      {
+        id: 'select',
+        header: ({ table }) => (
+          <Checkbox
+            checked={table.getIsAllPageRowsSelected()}
+            onCheckedChange={(value) => table.toggleAllPageRowsSelected(!!value)}
+            aria-label="Select all"
+          />
+        ),
+        cell: ({ row }) => (
+          <Checkbox
+            checked={row.getIsSelected()}
+            onCheckedChange={(value) => row.toggleSelected(!!value)}
+            aria-label="Select row"
+          />
+        ),
+        enableSorting: false,
+      },
+      {
+        accessorKey: 'sku',
+        header: ({ column }) => (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="-ml-3"
+            onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
+          >
+            SKU
+            <ArrowUpDown className="ml-2 h-3 w-3" />
+          </Button>
+        ),
+        cell: ({ row }) => (
+          <span className="font-mono text-xs">{row.getValue('sku')}</span>
+        ),
+      },
+      {
+        accessorKey: 'name',
+        header: ({ column }) => (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="-ml-3"
+            onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
+          >
+            Name
+            <ArrowUpDown className="ml-2 h-3 w-3" />
+          </Button>
+        ),
+      },
+      {
+        accessorKey: 'categoryId',
+        header: 'Category',
+        cell: ({ row }) => (
+          <Badge variant="secondary">{getCategoryName(row.getValue('categoryId'))}</Badge>
+        ),
+      },
+      {
+        accessorKey: 'stockQuantity',
+        header: ({ column }) => (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="-ml-3"
+            onClick={() => column.toggleSorting(column.getIsSorted() === 'asc')}
+          >
+            Stock
+            <ArrowUpDown className="ml-2 h-3 w-3" />
+          </Button>
+        ),
+        cell: ({ row }) => {
+          const product = row.original;
+          const status = getStockStatus(product);
+          return (
+            <span
+              className={cn(
+                status === 'critical' && 'stock-critical',
+                status === 'low' && 'stock-low',
+                status === 'ok' && 'stock-ok'
+              )}
+            >
+              {product.stockQuantity}
+            </span>
+          );
+        },
+      },
+      {
+        accessorKey: 'costPrice',
+        header: 'Cost',
+        cell: ({ row }) => formatPKR(row.getValue('costPrice') as number),
+      },
+      {
+        accessorKey: 'sellingPrice',
+        header: 'Price',
+        cell: ({ row }) => formatPKR(row.getValue('sellingPrice') as number),
+      },
+      {
+        id: 'actions',
+        cell: ({ row }) => (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setEditingProduct(row.original)}
+          >
+            Edit
+          </Button>
+        ),
+      },
+    ],
+    [categories]
+  );
+
+  const table = useReactTable({
+    data: products,
+    columns,
+    state: {
+      sorting,
+      globalFilter,
+      rowSelection,
+    },
+    onSortingChange: setSorting,
+    onGlobalFilterChange: setGlobalFilter,
+    onRowSelectionChange: setRowSelection,
+    getCoreRowModel: getCoreRowModel(),
+    getFilteredRowModel: getFilteredRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+    getPaginationRowModel: getPaginationRowModel(),
+    initialState: {
+      pagination: { pageSize: 20 },
+    },
+  });
+
+  const selectedCount = Object.keys(rowSelection).length;
+
+  const handleBulkDelete = () => {
+    const selectedIds = table
+      .getSelectedRowModel()
+      .rows.map((row) => row.original.id);
+    deleteProducts(selectedIds);
+    setRowSelection({});
+    toast.success(`Deleted ${selectedIds.length} products`);
+  };
+
+  // Category handlers
+  const handleAddCategory = () => {
+    if (!categoryForm.name.trim()) {
+      toast.error('Category name is required');
+      return;
+    }
+    addCategory({
+      name: categoryForm.name.trim(),
+      description: categoryForm.description.trim(),
+    });
+    toast.success('Category added successfully');
+    setCategoryForm({ name: '', description: '' });
+  };
+
+  const handleUpdateCategory = () => {
+    if (!editingCategory) return;
+    if (!categoryForm.name.trim()) {
+      toast.error('Category name is required');
+      return;
+    }
+    updateCategory(editingCategory.id, {
+      name: categoryForm.name.trim(),
+      description: categoryForm.description.trim(),
+    });
+    toast.success('Category updated successfully');
+    setEditingCategory(null);
+    setCategoryForm({ name: '', description: '' });
+  };
+
+  const handleDeleteCategory = () => {
+    if (!deleteCategoryId) return;
+    const productsInCategory = products.filter(p => p.categoryId === deleteCategoryId);
+    if (productsInCategory.length > 0) {
+      toast.error(`Cannot delete category with ${productsInCategory.length} products. Move or delete the products first.`);
+      setDeleteCategoryId(null);
+      return;
+    }
+    deleteCategory(deleteCategoryId);
+    toast.success('Category deleted successfully');
+    setDeleteCategoryId(null);
+  };
+
+  const startEditCategory = (category: Category) => {
+    setEditingCategory(category);
+    setCategoryForm({ name: category.name, description: category.description });
+  };
+
+  const cancelEditCategory = () => {
+    setEditingCategory(null);
+    setCategoryForm({ name: '', description: '' });
+  };
+
+  return (
+    <div className="p-6">
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h1 className="text-2xl font-semibold text-foreground">Inventory</h1>
+          <p className="text-sm text-muted-foreground">
+            Manage your product catalog and stock levels
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => setIsCategoryDialogOpen(true)}>
+            <FolderOpen className="w-4 h-4 mr-2" />
+            Categories
+          </Button>
+          <Button variant="outline" onClick={() => setIsQuickAddOpen(true)}>
+            <Package className="w-4 h-4 mr-2" />
+            Quick Add Stock
+          </Button>
+          <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
+            <DialogTrigger asChild>
+              <Button>
+                <Plus className="w-4 h-4 mr-2" />
+                Add Product
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="max-w-lg">
+              <DialogHeader>
+                <DialogTitle>Add New Product</DialogTitle>
+              </DialogHeader>
+              <ProductForm onSuccess={() => setIsAddDialogOpen(false)} />
+            </DialogContent>
+          </Dialog>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-4 mb-4">
+        <div className="relative flex-1 max-w-sm">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+          <Input
+            placeholder="Search by SKU or name..."
+            value={globalFilter}
+            onChange={(e) => setGlobalFilter(e.target.value)}
+            className="pl-10"
+          />
+        </div>
+        {selectedCount > 0 && (
+          <Button variant="destructive" size="sm" onClick={handleBulkDelete}>
+            <Trash2 className="w-4 h-4 mr-2" />
+            Delete {selectedCount} selected
+          </Button>
+        )}
+        <span className="text-sm text-muted-foreground ml-auto">
+          {table.getFilteredRowModel().rows.length} products
+        </span>
+      </div>
+
+      <div className="border rounded-lg bg-card">
+        <Table className="data-table">
+          <TableHeader>
+            {table.getHeaderGroups().map((headerGroup) => (
+              <TableRow key={headerGroup.id}>
+                {headerGroup.headers.map((header) => (
+                  <TableHead key={header.id}>
+                    {header.isPlaceholder
+                      ? null
+                      : flexRender(header.column.columnDef.header, header.getContext())}
+                  </TableHead>
+                ))}
+              </TableRow>
+            ))}
+          </TableHeader>
+          <TableBody>
+            {table.getRowModel().rows.length ? (
+              table.getRowModel().rows.map((row) => (
+                <TableRow key={row.id} data-state={row.getIsSelected() && 'selected'}>
+                  {row.getVisibleCells().map((cell) => (
+                    <TableCell key={cell.id}>
+                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                    </TableCell>
+                  ))}
+                </TableRow>
+              ))
+            ) : (
+              <TableRow>
+                <TableCell colSpan={columns.length} className="h-24 text-center">
+                  No products found.
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </div>
+
+      <div className="flex items-center justify-between mt-4">
+        <div className="text-sm text-muted-foreground">
+          Page {table.getState().pagination.pageIndex + 1} of {table.getPageCount()}
+        </div>
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => table.previousPage()}
+            disabled={!table.getCanPreviousPage()}
+          >
+            Previous
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => table.nextPage()}
+            disabled={!table.getCanNextPage()}
+          >
+            Next
+          </Button>
+        </div>
+      </div>
+
+      {/* Edit Product Dialog */}
+      <Dialog open={!!editingProduct} onOpenChange={() => setEditingProduct(null)}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Edit Product</DialogTitle>
+          </DialogHeader>
+          {editingProduct && (
+            <ProductForm
+              product={editingProduct}
+              onSuccess={() => setEditingProduct(null)}
+            />
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Quick Add Stock Modal */}
+      <QuickAddModal open={isQuickAddOpen} onOpenChange={setIsQuickAddOpen} />
+
+      {/* Category Management Dialog */}
+      <Dialog open={isCategoryDialogOpen} onOpenChange={setIsCategoryDialogOpen}>
+        <DialogContent className="max-w-xl">
+          <DialogHeader>
+            <DialogTitle>Manage Categories</DialogTitle>
+            <DialogDescription>
+              Add, edit, or delete product categories
+            </DialogDescription>
+          </DialogHeader>
+          
+          {/* Add/Edit Category Form */}
+          <div className="space-y-4 py-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>Category Name *</Label>
+                <Input
+                  value={categoryForm.name}
+                  onChange={(e) => setCategoryForm({ ...categoryForm, name: e.target.value })}
+                  placeholder="Enter category name"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Description</Label>
+                <Input
+                  value={categoryForm.description}
+                  onChange={(e) => setCategoryForm({ ...categoryForm, description: e.target.value })}
+                  placeholder="Brief description"
+                />
+              </div>
+            </div>
+            <div className="flex gap-2">
+              {editingCategory ? (
+                <>
+                  <Button onClick={handleUpdateCategory}>
+                    <Edit className="w-4 h-4 mr-2" />
+                    Update Category
+                  </Button>
+                  <Button variant="outline" onClick={cancelEditCategory}>
+                    Cancel
+                  </Button>
+                </>
+              ) : (
+                <Button onClick={handleAddCategory}>
+                  <Plus className="w-4 h-4 mr-2" />
+                  Add Category
+                </Button>
+              )}
+            </div>
+          </div>
+
+          {/* Categories List */}
+          <div className="border rounded-lg max-h-[300px] overflow-y-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Description</TableHead>
+                  <TableHead className="text-center">Products</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {categories.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={4} className="text-center text-muted-foreground py-8">
+                      No categories yet. Add your first category above.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  categories.map((category) => {
+                    const productCount = products.filter(p => p.categoryId === category.id).length;
+                    return (
+                      <TableRow key={category.id}>
+                        <TableCell className="font-medium">{category.name}</TableCell>
+                        <TableCell className="text-muted-foreground">{category.description || '-'}</TableCell>
+                        <TableCell className="text-center">
+                          <Badge variant="secondary">{productCount}</Badge>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex items-center justify-end gap-1">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => startEditCategory(category)}
+                            >
+                              <Edit className="w-4 h-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => setDeleteCategoryId(category.id)}
+                              disabled={productCount > 0}
+                              title={productCount > 0 ? 'Cannot delete category with products' : 'Delete category'}
+                            >
+                              <Trash2 className="w-4 h-4 text-destructive" />
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Category Confirmation */}
+      <AlertDialog open={!!deleteCategoryId} onOpenChange={() => setDeleteCategoryId(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Category</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete this category? This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleDeleteCategory} className="bg-destructive hover:bg-destructive/90">
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}
