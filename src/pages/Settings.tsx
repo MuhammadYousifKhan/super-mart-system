@@ -33,6 +33,8 @@ import { useState, useRef } from 'react';
 import type { UserCredentials } from '@/types/pos';
 import { Upload, X, Store, User, Lock, Building2, FileImage, Users, Plus, Trash2, Mail, Eye, EyeOff } from 'lucide-react';
 
+const FIXED_CARD_FEE_PERCENT = 2;
+
 export default function Settings() {
   const { settings, updateSettings } = useStore();
   const { user, updateCredentials, getUsers, createUser, deleteUser, isAdmin } = useAuth();
@@ -61,7 +63,7 @@ export default function Settings() {
   });
 
   const handleSave = () => {
-    updateSettings({ ...form, logo: logoPreview });
+    updateSettings({ ...form, logo: logoPreview, cardFeePercent: FIXED_CARD_FEE_PERCENT });
     toast.success('Settings saved successfully');
   };
 
@@ -324,13 +326,13 @@ export default function Settings() {
               <Label>Card Payment Fee (%)</Label>
               <Input
                 type="number"
-                value={form.cardFeePercent ?? 0}
-                onChange={(e) => setForm({ ...form, cardFeePercent: parseFloat(e.target.value) || 0 })}
+                value={FIXED_CARD_FEE_PERCENT}
+                readOnly
                 min="0"
                 max="100"
                 step="0.1"
               />
-              <p className="text-sm text-muted-foreground">Optional fee (%) added when accepting card payments (e.g. 2 or 3)</p>
+              <p className="text-sm text-muted-foreground">Card fee is fixed at 2% for all card payments.</p>
             </div>
             <div className="flex items-center justify-between p-4 rounded-lg bg-muted/50">
               <div>

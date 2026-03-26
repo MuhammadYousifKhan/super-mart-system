@@ -34,6 +34,11 @@ create table public.customers (
   balance numeric not null default 0
 );
 
+alter table public.customers add column if not exists nic text;
+alter table public.customers add column if not exists total_credit numeric not null default 0;
+alter table public.customers add column if not exists total_paid numeric not null default 0;
+alter table public.customers add column if not exists balance numeric not null default 0;
+
 -- Customer Transactions Table (Credit Ledger)
 create table public.customer_transactions (
   id text primary key,
@@ -44,6 +49,8 @@ create table public.customer_transactions (
   description text,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
+
+alter table public.customer_transactions add column if not exists order_id text;
 
 -- Orders Table
 create table public.orders (
@@ -66,8 +73,19 @@ create table public.orders (
   transfer_type text, -- 'bank', 'jazzcash', 'easypaisa'
   transaction_id text,
   -- Credit sale customer link
-  customer_id text references public.customers(id)
+  customer_id text references public.customers(id),
+  -- Card fee
+  card_fee_amount numeric default 0,
+  card_fee_rate numeric default 0
 );
+
+alter table public.orders add column if not exists client_name text;
+alter table public.orders add column if not exists client_phone text;
+alter table public.orders add column if not exists transfer_type text;
+alter table public.orders add column if not exists transaction_id text;
+alter table public.orders add column if not exists customer_id text references public.customers(id);
+alter table public.orders add column if not exists card_fee_amount numeric default 0;
+alter table public.orders add column if not exists card_fee_rate numeric default 0;
 
 -- Order Items Table
 create table public.order_items (
@@ -88,15 +106,20 @@ create table public.store_settings (
   address text,
   phone text,
   tax_rate numeric default 0,
+  card_fee_percent numeric default 2,
   receipt_footer_message text,
   allow_negative_stock boolean default false,
   logo text
 );
 
+alter table public.store_settings add column if not exists card_fee_percent numeric default 2;
+
 -- Insert default settings
-insert into public.store_settings (id, store_name, address, phone, tax_rate, receipt_footer_message, allow_negative_stock)
-values (1, 'My Store', '123 Main Street', '(555) 123-4567', 10, 'Thank you for your purchase!', false)
+insert into public.store_settings (id, store_name, address, phone, tax_rate, card_fee_percent, receipt_footer_message, allow_negative_stock)
+values (1, 'My Store', '123 Main Street', '(555) 123-4567', 10, 2, 'Thank you for your purchase!', false)
 on conflict (id) do nothing;
+
+update public.store_settings set card_fee_percent = 2 where id = 1;
 
 -- Insert default categories
 insert into public.categories (id, name, description) values

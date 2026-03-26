@@ -22,6 +22,8 @@ import { Banknote, CreditCard, ArrowLeftRight, UserCheck, Building2, Smartphone,
 import { toast } from 'sonner';
 import { formatPKR } from '@/pages/Analytics';
 
+const FIXED_CARD_FEE_PERCENT = 2;
+
 interface CheckoutModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -52,8 +54,8 @@ export function CheckoutModal({ open, onOpenChange, onComplete }: CheckoutModalP
 
   const total = calculateTotal();
   const tendered = parseFloat(amountTendered) || 0;
-  // Card fee calculation (UI) - settings.cardFeePercent applied to base total
-  const cardFeeRate = settings.cardFeePercent || 0;
+  // Card fee calculation (UI) - fixed 2% on base total
+  const cardFeeRate = FIXED_CARD_FEE_PERCENT;
   const cardFee = paymentMethod === 'card' && cardFeeRate > 0 ? (total * cardFeeRate) / 100 : 0;
   const finalTotal = total + cardFee;
   const change = tendered - finalTotal;

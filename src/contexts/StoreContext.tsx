@@ -94,10 +94,12 @@ const DEFAULT_SETTINGS: StoreSettings = {
   address: '123 Main Street, City',
   phone: '(555) 123-4567',
   taxRate: 10,
-  cardFeePercent: 0,
+  cardFeePercent: 2,
   receiptFooterMessage: 'Thank you for your purchase!',
   allowNegativeStock: false,
 };
+
+const FIXED_CARD_FEE_PERCENT = 2;
 
 const SAMPLE_CATEGORIES: Category[] = [
   { id: 'cat-1', name: 'Electronics', description: 'Electronic devices and accessories' },
@@ -202,6 +204,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             status: o.status,
             amountTendered: o.amount_tendered,
             changeGiven: o.change_given,
+            clientName: o.client_name,
+            clientPhone: o.client_phone,
+            transferType: o.transfer_type,
+            transactionId: o.transaction_id,
+            customerId: o.customer_id,
+            cardFeeAmount: o.card_fee_amount,
+            cardFeeRate: o.card_fee_rate,
           })));
         }
 
@@ -236,11 +245,51 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             address: settingsData.address,
             phone: settingsData.phone,
             taxRate: settingsData.tax_rate,
-            cardFeePercent: settingsData.card_fee_percent ?? 0,
+            cardFeePercent: FIXED_CARD_FEE_PERCENT,
             receiptFooterMessage: settingsData.receipt_footer_message,
             allowNegativeStock: settingsData.allow_negative_stock,
             logo: settingsData.logo,
           });
+        }
+
+        // Fetch Customers
+        const { data: customersData, error: customersError } = await supabase
+          .from('customers')
+          .select('*')
+          .order('created_at', { ascending: false });
+
+        if (customersError) throw customersError;
+        if (customersData) {
+          setCustomers(customersData.map((c: any) => ({
+            id: c.id,
+            name: c.name,
+            phone: c.phone,
+            address: c.address,
+            nic: c.nic,
+            createdAt: c.created_at,
+            totalCredit: c.total_credit,
+            totalPaid: c.total_paid,
+            balance: c.balance,
+          })));
+        }
+
+        // Fetch Customer Transactions
+        const { data: transactionsData, error: transactionsError } = await supabase
+          .from('customer_transactions')
+          .select('*')
+          .order('created_at', { ascending: false });
+
+        if (transactionsError) throw transactionsError;
+        if (transactionsData) {
+          setCustomerTransactions(transactionsData.map((t: any) => ({
+            id: t.id,
+            customerId: t.customer_id,
+            orderId: t.order_id,
+            type: t.type,
+            amount: t.amount,
+            description: t.description,
+            createdAt: t.created_at,
+          })));
         }
 
       } catch (error) {
@@ -560,7 +609,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
     // Card fee (if payment by card) - applied on post-tax amount
     const baseTotal = subtotal - globalDiscountAmt + taxAmount;
-    const cardFeeRate = paymentMethod === 'card' ? (settings.cardFeePercent || 0) : 0;
+    const cardFeeRate = paymentMethod === 'card' ? FIXED_CARD_FEE_PERCENT : 0;
     const cardFeeAmount = paymentMethod === 'card' && cardFeeRate > 0 ? (baseTotal * cardFeeRate) / 100 : 0;
 
     const totalAmount = baseTotal + cardFeeAmount;
@@ -619,7 +668,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
     // If credit sale with customer, add credit transaction (Digi Khata)
     if (paymentMethod === 'credit' && customerId) {
-      addCreditTransaction(customerId, order.id, totalAmount);
+      await addCreditTransaction(customerId, order.id, totalAmount);
     }
 
     if (import.meta.env.VITE_SUPABASE_URL) {
@@ -639,6 +688,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         status: order.status,
         amount_tendered: order.amountTendered,
         change_given: order.changeGiven,
+        client_name: order.clientName,
+        client_phone: order.clientPhone,
+        transfer_type: order.transferType,
+        transaction_id: order.transactionId,
+        customer_id: order.customerId,
       });
 
       if (orderError) {
@@ -715,18 +769,72 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       balance: 0,
     };
     setCustomers((prev) => [...prev, newCustomer]);
+
+    if (import.meta.env.VITE_SUPABASE_URL) {
+      void supabase.from('customers').insert({
+        id: newCustomer.id,
+        name: newCustomer.name,
+        phone: newCustomer.phone,
+        address: newCustomer.address,
+        nic: newCustomer.nic,
+        created_at: newCustomer.createdAt,
+        total_credit: newCustomer.totalCredit,
+        total_paid: newCustomer.totalPaid,
+        balance: newCustomer.balance,
+      }).then(({ error }) => {
+        if (error) {
+          console.error('Error adding customer:', error);
+          toast.error('Failed to save customer to database');
+        }
+      });
+    }
   };
 
   const updateCustomer = (id: string, updates: Partial<Customer>) => {
     setCustomers((prev) =>
       prev.map((c) => (c.id === id ? { ...c, ...updates } : c))
     );
+
+    if (import.meta.env.VITE_SUPABASE_URL) {
+      const dbUpdates: any = {};
+      if (updates.name !== undefined) dbUpdates.name = updates.name;
+      if (updates.phone !== undefined) dbUpdates.phone = updates.phone;
+      if (updates.address !== undefined) dbUpdates.address = updates.address;
+      if (updates.nic !== undefined) dbUpdates.nic = updates.nic;
+      if (updates.totalCredit !== undefined) dbUpdates.total_credit = updates.totalCredit;
+      if (updates.totalPaid !== undefined) dbUpdates.total_paid = updates.totalPaid;
+      if (updates.balance !== undefined) dbUpdates.balance = updates.balance;
+
+      void supabase
+        .from('customers')
+        .update(dbUpdates)
+        .eq('id', id)
+        .then(({ error }) => {
+          if (error) {
+            console.error('Error updating customer:', error);
+            toast.error('Failed to update customer in database');
+          }
+        });
+    }
   };
 
   const deleteCustomer = (id: string) => {
     setCustomers((prev) => prev.filter((c) => c.id !== id));
     // Also delete related transactions
     setCustomerTransactions((prev) => prev.filter((t) => t.customerId !== id));
+
+    if (import.meta.env.VITE_SUPABASE_URL) {
+      void supabase
+        .from('customers')
+        .delete()
+        .eq('id', id)
+        .then(({ error }) => {
+          if (error) {
+            console.error('Error deleting customer:', error);
+            toast.error('Failed to delete customer from database');
+          }
+        });
+    }
   };
 
   const getCustomerById = (id: string) => {
@@ -734,13 +842,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   };
 
   const addCustomerPayment = (customerId: string, amount: number, description: string) => {
+    const createdAt = new Date().toISOString();
     const transaction: CustomerTransaction = {
       id: generateId(),
       customerId,
       type: 'payment',
       amount,
       description,
-      createdAt: new Date().toISOString(),
+      createdAt,
     };
     setCustomerTransactions((prev) => [...prev, transaction]);
     
@@ -758,6 +867,35 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         return c;
       })
     );
+
+    if (import.meta.env.VITE_SUPABASE_URL) {
+      const customer = customers.find((c) => c.id === customerId);
+      if (customer) {
+        const newTotalPaid = customer.totalPaid + amount;
+        const newBalance = customer.totalCredit - newTotalPaid;
+
+        void Promise.all([
+          supabase.from('customer_transactions').insert({
+            id: transaction.id,
+            customer_id: transaction.customerId,
+            order_id: transaction.orderId,
+            type: transaction.type,
+            amount: transaction.amount,
+            description: transaction.description,
+            created_at: createdAt,
+          }),
+          supabase
+            .from('customers')
+            .update({ total_paid: newTotalPaid, balance: newBalance })
+            .eq('id', customerId),
+        ]).then(([transactionResult, customerResult]) => {
+          if (transactionResult.error || customerResult.error) {
+            console.error('Error adding customer payment:', transactionResult.error || customerResult.error);
+            toast.error('Failed to record payment in database');
+          }
+        });
+      }
+    }
   };
 
   const getCustomerTransactions = (customerId: string) => {
@@ -765,7 +903,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   };
 
   // Helper to add credit transaction when creating credit order
-  const addCreditTransaction = (customerId: string, orderId: string, amount: number) => {
+  const addCreditTransaction = async (customerId: string, orderId: string, amount: number) => {
+    const createdAt = new Date().toISOString();
     const transaction: CustomerTransaction = {
       id: generateId(),
       customerId,
@@ -773,7 +912,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       type: 'credit',
       amount,
       description: `Credit sale - Order #${orderId.slice(-8).toUpperCase()}`,
-      createdAt: new Date().toISOString(),
+      createdAt,
     };
     setCustomerTransactions((prev) => [...prev, transaction]);
     
@@ -791,6 +930,35 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         return c;
       })
     );
+
+    if (import.meta.env.VITE_SUPABASE_URL) {
+      const customer = customers.find((c) => c.id === customerId);
+      if (!customer) return;
+
+      const newTotalCredit = customer.totalCredit + amount;
+      const newBalance = newTotalCredit - customer.totalPaid;
+
+      const [transactionResult, customerResult] = await Promise.all([
+        supabase.from('customer_transactions').insert({
+          id: transaction.id,
+          customer_id: transaction.customerId,
+          order_id: transaction.orderId,
+          type: transaction.type,
+          amount: transaction.amount,
+          description: transaction.description,
+          created_at: createdAt,
+        }),
+        supabase
+          .from('customers')
+          .update({ total_credit: newTotalCredit, balance: newBalance })
+          .eq('id', customerId),
+      ]);
+
+      if (transactionResult.error || customerResult.error) {
+        console.error('Error adding credit transaction:', transactionResult.error || customerResult.error);
+        toast.error('Failed to save credit transaction to database');
+      }
+    }
   };
 
   return (
