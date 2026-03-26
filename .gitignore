@@ -12,13 +12,46 @@ dist
 dist-ssr
 *.local
 
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+
+# Build/test/cache artifacts
+coverage
+.nyc_output
+.cache
+.parcel-cache
+.eslintcache
+*.tsbuildinfo
+
+# Temporary files
+tmp
+temp
+*.tmp
+*.bak
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
 .idea
 .DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.Spotlight-V100/
+.Trashes/
+ehthumbs.db
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
+
+# Local credential notes
+mysupabase pass
