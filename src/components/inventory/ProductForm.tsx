@@ -7,6 +7,7 @@ import { Product } from '@/types/pos';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   Form,
   FormControl,
@@ -33,6 +34,9 @@ const productSchema = z.object({
   sellingPrice: z.coerce.number().min(0, 'Must be positive'),
   stockQuantity: z.coerce.number().int().min(0, 'Must be non-negative'),
   lowStockThreshold: z.coerce.number().int().min(1, 'Must be at least 1'),
+  expiryDate: z.string().optional(),
+  barcode: z.string().max(100).optional(),
+  barcodeEnabled: z.boolean().default(false),
 });
 
 type ProductFormData = z.infer<typeof productSchema>;
@@ -58,6 +62,9 @@ export function ProductForm({ product, onSuccess }: ProductFormProps) {
           sellingPrice: product.sellingPrice,
           stockQuantity: product.stockQuantity,
           lowStockThreshold: product.lowStockThreshold,
+          expiryDate: product.expiryDate || '',
+          barcode: product.barcode || '',
+          barcodeEnabled: product.barcodeEnabled || false,
         }
       : {
           sku: '',
@@ -68,6 +75,9 @@ export function ProductForm({ product, onSuccess }: ProductFormProps) {
           sellingPrice: 0,
           stockQuantity: 0,
           lowStockThreshold: 10,
+          expiryDate: '',
+          barcode: '',
+          barcodeEnabled: false,
         },
   });
 
@@ -97,6 +107,9 @@ export function ProductForm({ product, onSuccess }: ProductFormProps) {
         sellingPrice: data.sellingPrice,
         stockQuantity: data.stockQuantity,
         lowStockThreshold: data.lowStockThreshold,
+        expiryDate: data.expiryDate || undefined,
+        barcode: data.barcode || undefined,
+        barcodeEnabled: data.barcodeEnabled || false,
       });
       toast.success('Product created');
     }
@@ -236,6 +249,54 @@ export function ProductForm({ product, onSuccess }: ProductFormProps) {
             )}
           />
         </div>
+
+        <div className="grid grid-cols-2 gap-4">
+          <FormField
+            control={form.control}
+            name="expiryDate"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Expiry Date</FormLabel>
+                <FormControl>
+                  <Input {...field} type="date" />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name="barcode"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Barcode / EAN</FormLabel>
+                <FormControl>
+                  <Input {...field} placeholder="e.g., 9780201379624" />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+        </div>
+
+        <FormField
+          control={form.control}
+          name="barcodeEnabled"
+          render={({ field }) => (
+            <FormItem className="flex flex-row items-center space-x-3 space-y-0">
+              <FormControl>
+                <Checkbox
+                  checked={field.value}
+                  onCheckedChange={field.onChange}
+                />
+              </FormControl>
+              <FormLabel className="font-normal cursor-pointer">
+                Enable barcode scanning for this product
+              </FormLabel>
+            </FormItem>
+          )}
+        />
 
         <div className="flex justify-end gap-2 pt-4">
           <Button type="submit" disabled={isSubmitting}>

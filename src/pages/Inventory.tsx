@@ -76,6 +76,18 @@ export default function Inventory() {
     return 'ok';
   };
 
+  const getExpiryStatus = (expiryDate?: string) => {
+    if (!expiryDate) return null;
+    const expiry = new Date(expiryDate);
+    const now = new Date();
+    const daysUntilExpiry = (expiry.getTime() - now.getTime()) / (1000 * 60 * 60 * 24);
+    
+    if (daysUntilExpiry < 0) return 'expired';
+    if (daysUntilExpiry < 14) return 'critical';
+    if (daysUntilExpiry < 30) return 'warning';
+    return 'ok';
+  };
+
   const columns: ColumnDef<Product>[] = useMemo(
     () => [
       {
@@ -172,6 +184,49 @@ export default function Inventory() {
         accessorKey: 'sellingPrice',
         header: 'Price',
         cell: ({ row }) => formatPKR(row.getValue('sellingPrice') as number),
+      },
+      {
+        accessorKey: 'expiryDate',
+        header: 'Expiry Date',
+        cell: ({ row }) => {
+          const expiryDate = row.getValue('expiryDate') as string | undefined;
+          if (!expiryDate) return <span className="text-gray-400">No expiry</span>;
+          const status = getExpiryStatus(expiryDate);
+          const displayDate = new Date(expiryDate).toLocaleDateString('en-US', {
+            month: 'short',
+            day: 'numeric',
+            year: '2-digit',
+          });
+          return (
+            <Badge
+              variant={
+                status === 'expired'
+                  ? 'destructive'
+                  : status === 'critical'
+                    ? 'destructive'
+                    : status === 'warning'
+                      ? 'secondary'
+                      : 'outline'
+              }
+            >
+              {displayDate}
+            </Badge>
+          );
+        },
+      },
+      {
+        accessorKey: 'barcode',
+        header: 'Barcode',
+        cell: ({ row }) => {
+          const product = row.original;
+          if (!product.barcode) return <span className="text-gray-400">-</span>;
+          return (
+            <div className="flex items-center gap-2">
+              <code className="text-xs bg-gray-100 px-2 py-1 rounded">{product.barcode}</code>
+              {product.barcodeEnabled && <Badge variant="outline">✓ Active</Badge>}
+            </div>
+          );
+        },
       },
       {
         id: 'actions',

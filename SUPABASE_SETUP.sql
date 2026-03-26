@@ -21,6 +21,11 @@ create table public.products (
   low_stock_threshold integer not null default 0
 );
 
+-- Add inventory tracking columns
+alter table public.products add column if not exists expiry_date date;
+alter table public.products add column if not exists barcode text;
+alter table public.products add column if not exists barcode_enabled boolean not null default false;
+
 -- Customers Table (Digi Khata)
 create table public.customers (
   id text primary key,

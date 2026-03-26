@@ -102,23 +102,23 @@ const DEFAULT_SETTINGS: StoreSettings = {
 const FIXED_CARD_FEE_PERCENT = 2;
 
 const SAMPLE_CATEGORIES: Category[] = [
-  { id: 'cat-1', name: 'Electronics', description: 'Electronic devices and accessories' },
-  { id: 'cat-2', name: 'Groceries', description: 'Food and beverages' },
-  { id: 'cat-3', name: 'Clothing', description: 'Apparel and accessories' },
-  { id: 'cat-4', name: 'Home & Kitchen', description: 'Home appliances and kitchenware' },
-  { id: 'cat-5', name: 'Health & Beauty', description: 'Personal care and cosmetics' },
-  { id: 'cat-6', name: 'Sports & Outdoors', description: 'Sports equipment and outdoor gear' },
-  { id: 'cat-7', name: 'Stationery', description: 'Office supplies and stationery' },
-  { id: 'cat-8', name: 'Mobile Accessories', description: 'Phone cases, chargers and accessories' },
+  { id: 'cat-grocery', name: 'Grocery', description: 'Fresh and packaged grocery items' },
+  { id: 'cat-toys-sports', name: 'Toys/Sports', description: 'Toys and sports equipment' },
+  { id: 'cat-cleaning', name: 'Cleaning', description: 'Cleaning supplies and products' },
+  { id: 'cat-fragrances', name: 'Fragrances', description: 'Perfumes and fragrances' },
+  { id: 'cat-cosmetics', name: 'Cosmetics', description: 'Beauty and cosmetic products' },
+  { id: 'cat-food', name: 'Food', description: 'Ready-to-eat food and snacks' },
+  { id: 'cat-detergents', name: 'Detergents', description: 'Laundry and cleaning detergents' },
+  { id: 'cat-frozen', name: 'Frozen Items', description: 'Frozen foods and ice cream' },
 ];
 
 const SAMPLE_PRODUCTS: Product[] = [
-  { id: 'prod-1', sku: 'ELEC-001', name: 'Wireless Mouse', description: 'Ergonomic wireless mouse', categoryId: 'cat-1', costPrice: 2500, sellingPrice: 4500, stockQuantity: 45, lowStockThreshold: 10 },
-  { id: 'prod-2', sku: 'ELEC-002', name: 'USB-C Cable', description: '2m braided cable', categoryId: 'cat-1', costPrice: 800, sellingPrice: 1500, stockQuantity: 120, lowStockThreshold: 20 },
-  { id: 'prod-3', sku: 'ELEC-003', name: 'Bluetooth Headphones', description: 'Over-ear wireless headphones', categoryId: 'cat-1', costPrice: 8000, sellingPrice: 15000, stockQuantity: 8, lowStockThreshold: 10 },
-  { id: 'prod-4', sku: 'GROC-001', name: 'Organic Coffee', description: '500g ground coffee', categoryId: 'cat-2', costPrice: 1200, sellingPrice: 2200, stockQuantity: 65, lowStockThreshold: 15 },
-  { id: 'prod-5', sku: 'GROC-002', name: 'Green Tea Pack', description: '50 tea bags', categoryId: 'cat-2', costPrice: 600, sellingPrice: 1100, stockQuantity: 3, lowStockThreshold: 10 },
-  { id: 'prod-6', sku: 'CLTH-001', name: 'Cotton T-Shirt', description: '100% cotton, various sizes', categoryId: 'cat-3', costPrice: 1500, sellingPrice: 3500, stockQuantity: 55, lowStockThreshold: 10 },
+  { id: 'prod-1', sku: 'GROC-001', name: 'Organic Coffee', description: '500g ground coffee', categoryId: 'cat-grocery', costPrice: 1200, sellingPrice: 2200, stockQuantity: 65, lowStockThreshold: 15, expiryDate: '2026-09-15', barcode: '9780201379624', barcodeEnabled: true },
+  { id: 'prod-2', sku: 'GROC-002', name: 'Green Tea Pack', description: '50 tea bags', categoryId: 'cat-grocery', costPrice: 600, sellingPrice: 1100, stockQuantity: 3, lowStockThreshold: 10, expiryDate: '2026-12-31', barcode: '9780067234005', barcodeEnabled: true },
+  { id: 'prod-3', sku: 'FOOD-001', name: 'Milk 1L', description: 'Fresh milk', categoryId: 'cat-food', costPrice: 80, sellingPrice: 150, stockQuantity: 25, lowStockThreshold: 5, expiryDate: '2026-04-02', barcode: '5000157101066', barcodeEnabled: true },
+  { id: 'prod-4', sku: 'FOOD-002', name: 'Bread', description: 'Whole wheat bread', categoryId: 'cat-food', costPrice: 60, sellingPrice: 120, stockQuantity: 8, lowStockThreshold: 10, expiryDate: '2026-03-28', barcode: '5000275041222', barcodeEnabled: true },
+  { id: 'prod-5', sku: 'FROZEN-001', name: 'Ice Cream', description: 'Vanilla ice cream', categoryId: 'cat-frozen', costPrice: 150, sellingPrice: 300, stockQuantity: 12, lowStockThreshold: 5, expiryDate: '2027-01-31', barcode: '0020000028420', barcodeEnabled: true },
+  { id: 'prod-6', sku: 'CLEAN-001', name: 'Dish Soap', description: '500ml dish cleaning liquid', categoryId: 'cat-cleaning', costPrice: 120, sellingPrice: 200, stockQuantity: 35, lowStockThreshold: 8, barcode: '5901362011915', barcodeEnabled: true },
 ];
 
 function generateId(): string {
@@ -180,6 +180,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             sellingPrice: p.selling_price,
             stockQuantity: p.stock_quantity,
             lowStockThreshold: p.low_stock_threshold,
+            expiryDate: p.expiry_date,
+            barcode: p.barcode,
+            barcodeEnabled: p.barcode_enabled ?? false,
           })));
         }
 
@@ -360,6 +363,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         selling_price: newProduct.sellingPrice,
         stock_quantity: newProduct.stockQuantity,
         low_stock_threshold: newProduct.lowStockThreshold,
+        expiry_date: newProduct.expiryDate || null,
+        barcode: newProduct.barcode || null,
+        barcode_enabled: newProduct.barcodeEnabled || false,
       });
 
       if (error) {
@@ -388,6 +394,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       if (updates.sellingPrice !== undefined) dbUpdates.selling_price = updates.sellingPrice;
       if (updates.stockQuantity !== undefined) dbUpdates.stock_quantity = updates.stockQuantity;
       if (updates.lowStockThreshold !== undefined) dbUpdates.low_stock_threshold = updates.lowStockThreshold;
+      if (updates.expiryDate !== undefined) dbUpdates.expiry_date = updates.expiryDate || null;
+      if (updates.barcode !== undefined) dbUpdates.barcode = updates.barcode || null;
+      if (updates.barcodeEnabled !== undefined) dbUpdates.barcode_enabled = updates.barcodeEnabled;
 
       const { error } = await supabase
         .from('products')

@@ -23,6 +23,9 @@ export interface Product {
   sellingPrice: number;
   stockQuantity: number;
   lowStockThreshold: number;
+  expiryDate?: string; // ISO date string (YYYY-MM-DD)
+  barcode?: string; // Optional barcode/EAN
+  barcodeEnabled: boolean; // Whether barcode scanning is enabled for this product
 }
 
 // Customer / Digi Khata
