@@ -7,6 +7,7 @@ import {
   LayoutDashboard,
   ShoppingCart,
   Package,
+  Truck,
   BarChart3,
   Settings,
   LogOut,
@@ -24,6 +25,7 @@ const adminNavItems = [
   { path: '/pos', icon: ShoppingCart, label: 'POS Terminal' },
   { path: '/inventory', icon: Package, label: 'Inventory' },
   { path: '/customers', icon: Users, label: 'Customers' },
+  { path: '/suppliers', icon: Truck, label: 'Suppliers' },
   { path: '/analytics', icon: BarChart3, label: 'Analytics' },
   { path: '/settings', icon: Settings, label: 'Settings' },
 ];

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useStore } from '@/contexts/StoreContext';
-import { Customer, CustomerTransaction } from '@/types/pos';
+import { Customer, CustomerTransaction, ReminderFrequency } from '@/types/pos';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -35,6 +35,13 @@ import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
   Plus,
   Search,
   Edit,
@@ -48,6 +55,9 @@ import {
   ArrowDownCircle,
   History,
   Wallet,
+  Bell,
+  BellRing,
+  CalendarDays,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -55,11 +65,18 @@ export default function Customers() {
   const {
     customers,
     customerTransactions,
+    customerReminders,
     addCustomer,
     updateCustomer,
     deleteCustomer,
     getCustomerTransactions,
     addCustomerPayment,
+    addCustomerReminder,
+    updateCustomerReminder,
+    deleteCustomerReminder,
+    getCustomerReminders,
+    getDueCustomerReminders,
+    markReminderTriggered,
   } = useStore();
 
   const [searchTerm, setSearchTerm] = useState('');
@@ -68,6 +85,7 @@ export default function Customers() {
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const [showLedgerModal, setShowLedgerModal] = useState(false);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [showReminderModal, setShowReminderModal] = useState(false);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
 
   // Form state
@@ -81,6 +99,12 @@ export default function Customers() {
   // Payment form state
   const [paymentAmount, setPaymentAmount] = useState('');
   const [paymentDescription, setPaymentDescription] = useState('');
+  const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card'>('cash');
+
+  // Reminder form state
+  const [reminderFrequency, setReminderFrequency] = useState<ReminderFrequency>('weekly');
+  const [nextReminderDate, setNextReminderDate] = useState(new Date().toISOString().slice(0, 10));
+  const [reminderNote, setReminderNote] = useState('');
 
   const filteredCustomers = customers.filter(
     (customer) =>
@@ -163,16 +187,25 @@ export default function Customers() {
       return;
     }
 
+    const cardFee = paymentMethod === 'card' ? (amount * 2) / 100 : 0;
+    const totalCharged = amount + cardFee;
+
     addCustomerPayment(
       selectedCustomer.id,
       amount,
-      paymentDescription.trim() || 'Payment received'
+      paymentDescription.trim() || `${paymentMethod === 'card' ? 'Card' : 'Cash'} payment received`,
+      paymentMethod
     );
 
-    toast.success('Payment recorded successfully');
+    toast.success(
+      paymentMethod === 'card'
+        ? `Payment recorded. Card charge: Rs. ${cardFee.toLocaleString()} (Total charged: Rs. ${totalCharged.toLocaleString()})`
+        : 'Payment recorded successfully'
+    );
     setShowPaymentModal(false);
     setPaymentAmount('');
     setPaymentDescription('');
+    setPaymentMethod('cash');
   };
 
   const openEditModal = (customer: Customer) => {
@@ -195,6 +228,33 @@ export default function Customers() {
     setSelectedCustomer(customer);
     setShowPaymentModal(true);
   };
+
+  const openReminderModal = (customer: Customer) => {
+    setSelectedCustomer(customer);
+    setReminderFrequency('weekly');
+    setNextReminderDate(new Date().toISOString().slice(0, 10));
+    setReminderNote('');
+    setShowReminderModal(true);
+  };
+
+  const handleAddReminder = () => {
+    if (!selectedCustomer) return;
+    if (!nextReminderDate) {
+      toast.error('Next reminder date is required');
+      return;
+    }
+
+    addCustomerReminder(
+      selectedCustomer.id,
+      reminderFrequency,
+      nextReminderDate,
+      reminderNote.trim() || undefined
+    );
+    toast.success('Reminder scheduled successfully');
+    setShowReminderModal(false);
+  };
+
+  const dueReminders = getDueCustomerReminders();
 
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleDateString('en-US', {
@@ -241,7 +301,7 @@ export default function Customers() {
       </Tabs>
 
       {/* Header Stats */}
-      <div className="grid gap-4 md:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-5">
         <Card className="bg-gradient-to-br from-blue-500/10 to-cyan-500/10 border-blue-500/20">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-blue-200">
@@ -295,7 +355,62 @@ export default function Customers() {
             </div>
           </CardContent>
         </Card>
+
+        <Card className="bg-gradient-to-br from-indigo-500/10 to-blue-500/10 border-indigo-500/20">
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium text-indigo-200">
+              Due Reminders
+            </CardTitle>
+            <BellRing className="h-4 w-4 text-indigo-400" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold text-indigo-100">{dueReminders.length}</div>
+          </CardContent>
+        </Card>
       </div>
+
+      {dueReminders.length > 0 && (
+        <Card className="border-indigo-500/30 bg-indigo-500/5">
+          <CardHeader>
+            <CardTitle className="text-indigo-200 flex items-center gap-2">
+              <BellRing className="h-5 w-5" />
+              Due Udhaar Reminders
+            </CardTitle>
+            <CardDescription>Send reminders and move to the next schedule.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {dueReminders.map((reminder) => {
+              const customer = customers.find((c) => c.id === reminder.customerId);
+              return (
+                <div
+                  key={reminder.id}
+                  className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-3 rounded-lg border border-indigo-500/20 bg-black/20"
+                >
+                  <div>
+                    <p className="text-white font-medium">{customer?.name || 'Unknown Customer'}</p>
+                    <p className="text-xs text-gray-400">
+                      {reminder.frequency.toUpperCase()} reminder due on {reminder.nextReminderDate}
+                    </p>
+                    {reminder.note && <p className="text-xs text-gray-300 mt-1">{reminder.note}</p>}
+                  </div>
+                  <div className="flex gap-2">
+                    <Button size="sm" onClick={() => markReminderTriggered(reminder.id)}>
+                      Mark Sent
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => deleteCustomerReminder(reminder.id)}
+                    >
+                      Delete
+                    </Button>
+                  </div>
+                </div>
+              );
+            })}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Main Content */}
       <Card className="border-white/10 bg-black/20 backdrop-blur-xl">
@@ -413,6 +528,14 @@ export default function Customers() {
                               <DollarSign className="h-4 w-4 text-green-400" />
                             </Button>
                           )}
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => openReminderModal(customer)}
+                            title="Schedule Reminder"
+                          >
+                            <Bell className="h-4 w-4 text-indigo-400" />
+                          </Button>
                           <Button
                             variant="ghost"
                             size="icon"
@@ -690,6 +813,14 @@ export default function Customers() {
                               <p className="text-xs text-gray-400">
                                 {formatDate(transaction.createdAt)}
                               </p>
+                              {transaction.type === 'payment' && transaction.paymentMethod && (
+                                <p className="text-xs text-gray-400 mt-1">
+                                  Method: {transaction.paymentMethod.toUpperCase()}
+                                  {transaction.paymentMethod === 'card' && transaction.cardFeeAmount
+                                    ? ` | Card fee: Rs. ${transaction.cardFeeAmount.toLocaleString()}`
+                                    : ''}
+                                </p>
+                              )}
                             </div>
                           </div>
                           <span
@@ -758,6 +889,31 @@ export default function Customers() {
               </div>
             </div>
             <div className="space-y-2">
+              <Label className="text-gray-200">Payment Method</Label>
+              <Select
+                value={paymentMethod}
+                onValueChange={(value) => setPaymentMethod(value as 'cash' | 'card')}
+              >
+                <SelectTrigger className="bg-white/5 border-white/10">
+                  <SelectValue placeholder="Select payment method" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="cash">Cash</SelectItem>
+                  <SelectItem value="card">Card (2% charge)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {paymentMethod === 'card' && (parseFloat(paymentAmount) || 0) > 0 && (
+              <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-sm">
+                <p className="text-amber-300">
+                  Card charge (2%): Rs. {(((parseFloat(paymentAmount) || 0) * 2) / 100).toLocaleString()}
+                </p>
+                <p className="text-amber-200 mt-1">
+                  Total charged to customer: Rs. {((parseFloat(paymentAmount) || 0) * 1.02).toLocaleString()}
+                </p>
+              </div>
+            )}
+            <div className="space-y-2">
               <Label className="text-gray-200">Description (Optional)</Label>
               <Input
                 value={paymentDescription}
@@ -774,6 +930,7 @@ export default function Customers() {
                 setShowPaymentModal(false);
                 setPaymentAmount('');
                 setPaymentDescription('');
+                setPaymentMethod('cash');
               }}
             >
               Cancel
@@ -781,6 +938,96 @@ export default function Customers() {
             <Button onClick={handleAddPayment} className="bg-green-600 hover:bg-green-700">
               Record Payment
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Reminder Modal */}
+      <Dialog open={showReminderModal} onOpenChange={setShowReminderModal}>
+        <DialogContent className="bg-gray-900 border-white/10">
+          <DialogHeader>
+            <DialogTitle className="text-white flex items-center gap-2">
+              <Bell className="h-5 w-5" />
+              Schedule Udhaar Reminder
+            </DialogTitle>
+            <DialogDescription>
+              Set reminder frequency for {selectedCustomer?.name}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label className="text-gray-200">Frequency</Label>
+              <Select
+                value={reminderFrequency}
+                onValueChange={(value) => setReminderFrequency(value as ReminderFrequency)}
+              >
+                <SelectTrigger className="bg-white/5 border-white/10">
+                  <SelectValue placeholder="Select frequency" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="daily">Daily</SelectItem>
+                  <SelectItem value="weekly">Weekly</SelectItem>
+                  <SelectItem value="monthly">Monthly</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-gray-200">Next Reminder Date</Label>
+              <div className="relative">
+                <CalendarDays className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                <Input
+                  type="date"
+                  value={nextReminderDate}
+                  onChange={(e) => setNextReminderDate(e.target.value)}
+                  className="pl-10 bg-white/5 border-white/10"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-gray-200">Note (Optional)</Label>
+              <Input
+                value={reminderNote}
+                onChange={(e) => setReminderNote(e.target.value)}
+                placeholder="e.g., Call after salary date"
+                className="bg-white/5 border-white/10"
+              />
+            </div>
+
+            {selectedCustomer && getCustomerReminders(selectedCustomer.id).length > 0 && (
+              <div className="space-y-2">
+                <Label className="text-gray-200">Existing Reminders</Label>
+                <div className="space-y-2 max-h-40 overflow-y-auto">
+                  {getCustomerReminders(selectedCustomer.id).map((reminder) => (
+                    <div
+                      key={reminder.id}
+                      className="p-2 rounded border border-white/10 bg-black/20 flex items-center justify-between"
+                    >
+                      <div>
+                        <p className="text-sm text-white">
+                          {reminder.frequency.toUpperCase()} - {reminder.nextReminderDate}
+                        </p>
+                        {reminder.note && <p className="text-xs text-gray-400">{reminder.note}</p>}
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => deleteCustomerReminder(reminder.id)}
+                      >
+                        Delete
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowReminderModal(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleAddReminder}>Save Reminder</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -18,7 +18,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
-import { Banknote, CreditCard, ArrowLeftRight, UserCheck, Building2, Smartphone, Plus, User } from 'lucide-react';
+import { Banknote, CreditCard, ArrowLeftRight, UserCheck, Building2, Smartphone, User } from 'lucide-react';
 import { toast } from 'sonner';
 import { formatPKR } from '@/pages/Analytics';
 
@@ -50,7 +50,6 @@ export function CheckoutModal({ open, onOpenChange, onComplete }: CheckoutModalP
   const [transferType, setTransferType] = useState<TransferType>('bank');
   const [transactionId, setTransactionId] = useState('');
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>('');
-  const [showNewCustomerFields, setShowNewCustomerFields] = useState(false);
 
   const total = calculateTotal();
   const tendered = parseFloat(amountTendered) || 0;
@@ -65,8 +64,8 @@ export function CheckoutModal({ open, onOpenChange, onComplete }: CheckoutModalP
       return tendered >= finalTotal;
     }
     if (paymentMethod === 'credit') {
-      // Must select existing customer OR provide new customer name
-      return selectedCustomerId !== '' || (showNewCustomerFields && clientName.trim() !== '');
+      // Credit sale must be linked to an existing customer for ledger tracking
+      return selectedCustomerId !== '';
     }
     if (paymentMethod === 'transfer') {
       return transactionId.trim() !== '';
@@ -90,12 +89,19 @@ export function CheckoutModal({ open, onOpenChange, onComplete }: CheckoutModalP
     let finalClientPhone = clientPhone;
     let customerId = selectedCustomerId || undefined;
 
-    if (paymentMethod === 'credit' && selectedCustomerId) {
-      const customer = getCustomerById(selectedCustomerId);
-      if (customer) {
-        finalClientName = customer.name;
-        finalClientPhone = customer.phone;
+    if (paymentMethod === 'credit') {
+      if (!selectedCustomerId) {
+        toast.error('Please select a customer for credit sale');
+        return;
       }
+      const customer = getCustomerById(selectedCustomerId);
+      if (!customer) {
+        toast.error('Selected customer not found');
+        return;
+      }
+      finalClientName = customer.name;
+      finalClientPhone = customer.phone;
+      customerId = customer.id;
     }
 
     const order = await createOrder({
@@ -125,7 +131,6 @@ export function CheckoutModal({ open, onOpenChange, onComplete }: CheckoutModalP
     setTransferType('bank');
     setTransactionId('');
     setSelectedCustomerId('');
-    setShowNewCustomerFields(false);
   };
 
   const quickAmounts = [
@@ -284,7 +289,7 @@ export function CheckoutModal({ open, onOpenChange, onComplete }: CheckoutModalP
                 <p className="text-sm text-warning font-medium">⚠️ Credit Sale (Digi Khata)</p>
               </div>
               
-              {customers.length > 0 && !showNewCustomerFields && (
+              {customers.length > 0 && (
                 <div className="space-y-2">
                   <Label className="text-sm">Select Existing Customer <span className="text-destructive">*</span></Label>
                   <Select value={selectedCustomerId} onValueChange={setSelectedCustomerId}>
@@ -327,7 +332,7 @@ export function CheckoutModal({ open, onOpenChange, onComplete }: CheckoutModalP
                 </div>
               )}
 
-              {(customers.length === 0 || showNewCustomerFields) && (
+              {customers.length === 0 && (
                 <div className="space-y-2">
                   <Label className="text-sm">Customer Info <span className="text-destructive">*</span></Label>
                   <Input
@@ -343,30 +348,15 @@ export function CheckoutModal({ open, onOpenChange, onComplete }: CheckoutModalP
                     className="bg-background"
                   />
                   <p className="text-xs text-muted-foreground">
-                    Note: Add this customer from the Customers page to track their credit properly.
+                    Please add customer first from the Customers page, then select that customer for credit sale.
                   </p>
                 </div>
               )}
 
               {customers.length > 0 && (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="w-full text-xs"
-                  onClick={() => {
-                    setShowNewCustomerFields(!showNewCustomerFields);
-                    setSelectedCustomerId('');
-                    setClientName('');
-                    setClientPhone('');
-                  }}
-                >
-                  {showNewCustomerFields ? (
-                    <>Select Existing Customer</>
-                  ) : (
-                    <><Plus className="w-3 h-3 mr-1" /> New Customer (not in system)</>
-                  )}
-                </Button>
+                <p className="text-xs text-muted-foreground">
+                  Credit sales are only allowed for existing customers so Digi Khata balance updates correctly.
+                </p>
               )}
             </div>
           )}

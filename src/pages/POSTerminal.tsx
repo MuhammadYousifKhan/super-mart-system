@@ -36,6 +36,7 @@ export default function POSTerminal() {
 
   const filteredProducts = products.filter(
     (p) =>
+      (p.barcodeEnabled && !!p.barcode && p.barcode.toLowerCase().includes(searchQuery.toLowerCase())) ||
       p.sku.toLowerCase().includes(searchQuery.toLowerCase()) ||
       p.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
@@ -44,9 +45,21 @@ export default function POSTerminal() {
 
   const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter' && searchQuery) {
-      const product = products.find(
-        (p) => p.sku.toLowerCase() === searchQuery.toLowerCase()
+      const query = searchQuery.trim().toLowerCase();
+      const barcodeProductAny = products.find(
+        (p) => p.barcode && p.barcode.toLowerCase() === query
       );
+
+      if (barcodeProductAny && !barcodeProductAny.barcodeEnabled) {
+        toast.error('Barcode scanning is disabled for this product');
+        setSearchQuery('');
+        return;
+      }
+
+      const product =
+        products.find((p) => p.barcodeEnabled && p.barcode && p.barcode.toLowerCase() === query) ||
+        products.find((p) => p.sku.toLowerCase() === query);
+
       if (product) {
         if (product.stockQuantity <= 0 && !settings.allowNegativeStock) {
           toast.error('Out of stock');

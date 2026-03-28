@@ -51,11 +51,91 @@ create table public.customer_transactions (
   order_id text, -- Link to order if it's a credit sale
   type text not null, -- 'credit' or 'payment'
   amount numeric not null default 0,
+  payment_method text, -- 'cash' or 'card' for repayments
+  card_fee_rate numeric default 0,
+  card_fee_amount numeric default 0,
+  total_charged numeric,
   description text,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
 alter table public.customer_transactions add column if not exists order_id text;
+alter table public.customer_transactions add column if not exists payment_method text;
+alter table public.customer_transactions add column if not exists card_fee_rate numeric default 0;
+alter table public.customer_transactions add column if not exists card_fee_amount numeric default 0;
+alter table public.customer_transactions add column if not exists total_charged numeric;
+
+-- Customer Reminders Table (Udhaar reminders)
+create table public.customer_reminders (
+  id text primary key,
+  customer_id text references public.customers(id) on delete cascade,
+  frequency text not null, -- 'daily' | 'weekly' | 'monthly'
+  next_reminder_date date not null,
+  is_active boolean not null default true,
+  note text,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  last_triggered_at timestamp with time zone
+);
+
+alter table public.customer_reminders add column if not exists frequency text;
+alter table public.customer_reminders add column if not exists next_reminder_date date;
+alter table public.customer_reminders add column if not exists is_active boolean not null default true;
+alter table public.customer_reminders add column if not exists note text;
+alter table public.customer_reminders add column if not exists last_triggered_at timestamp with time zone;
+
+-- Suppliers Table
+create table public.suppliers (
+  id text primary key,
+  name text not null,
+  phone text not null,
+  address text not null,
+  contact_person text,
+  notes text,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  total_purchased numeric not null default 0,
+  total_paid numeric not null default 0,
+  balance numeric not null default 0
+);
+
+alter table public.suppliers add column if not exists contact_person text;
+alter table public.suppliers add column if not exists notes text;
+alter table public.suppliers add column if not exists total_purchased numeric not null default 0;
+alter table public.suppliers add column if not exists total_paid numeric not null default 0;
+alter table public.suppliers add column if not exists balance numeric not null default 0;
+
+-- Supplier Purchases Table
+create table public.supplier_purchases (
+  id text primary key,
+  supplier_id text references public.suppliers(id) on delete cascade,
+  description text not null,
+  amount numeric not null default 0,
+  purchase_date date not null,
+  invoice_number text,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+alter table public.supplier_purchases add column if not exists purchase_date date;
+alter table public.supplier_purchases add column if not exists invoice_number text;
+
+-- Supplier Payment Schedules Table
+create table public.supplier_payment_schedules (
+  id text primary key,
+  supplier_id text references public.suppliers(id) on delete cascade,
+  frequency text not null, -- 'daily' | 'weekly' | 'monthly'
+  next_payment_date date not null,
+  amount numeric not null default 0,
+  is_active boolean not null default true,
+  note text,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  last_paid_at timestamp with time zone
+);
+
+alter table public.supplier_payment_schedules add column if not exists frequency text;
+alter table public.supplier_payment_schedules add column if not exists next_payment_date date;
+alter table public.supplier_payment_schedules add column if not exists amount numeric not null default 0;
+alter table public.supplier_payment_schedules add column if not exists is_active boolean not null default true;
+alter table public.supplier_payment_schedules add column if not exists note text;
+alter table public.supplier_payment_schedules add column if not exists last_paid_at timestamp with time zone;
 
 -- Orders Table
 create table public.orders (
@@ -143,6 +223,10 @@ alter table public.categories enable row level security;
 alter table public.products enable row level security;
 alter table public.customers enable row level security;
 alter table public.customer_transactions enable row level security;
+alter table public.customer_reminders enable row level security;
+alter table public.suppliers enable row level security;
+alter table public.supplier_purchases enable row level security;
+alter table public.supplier_payment_schedules enable row level security;
 alter table public.orders enable row level security;
 alter table public.order_items enable row level security;
 alter table public.store_settings enable row level security;
@@ -154,6 +238,10 @@ create policy "Allow public access to categories" on public.categories for all u
 create policy "Allow public access to products" on public.products for all using (true);
 create policy "Allow public access to customers" on public.customers for all using (true);
 create policy "Allow public access to customer_transactions" on public.customer_transactions for all using (true);
+create policy "Allow public access to customer_reminders" on public.customer_reminders for all using (true);
+create policy "Allow public access to suppliers" on public.suppliers for all using (true);
+create policy "Allow public access to supplier_purchases" on public.supplier_purchases for all using (true);
+create policy "Allow public access to supplier_payment_schedules" on public.supplier_payment_schedules for all using (true);
 create policy "Allow public access to orders" on public.orders for all using (true);
 create policy "Allow public access to order_items" on public.order_items for all using (true);
 create policy "Allow public access to store_settings" on public.store_settings for all using (true);
@@ -164,4 +252,10 @@ create index idx_orders_created_at on public.orders(created_at);
 create index idx_orders_customer_id on public.orders(customer_id);
 create index idx_order_items_order_id on public.order_items(order_id);
 create index idx_customer_transactions_customer_id on public.customer_transactions(customer_id);
+create index idx_customer_reminders_customer_id on public.customer_reminders(customer_id);
+create index idx_customer_reminders_next_date on public.customer_reminders(next_reminder_date);
 create index idx_customers_phone on public.customers(phone);
+create index idx_suppliers_phone on public.suppliers(phone);
+create index idx_supplier_purchases_supplier_id on public.supplier_purchases(supplier_id);
+create index idx_supplier_payment_schedules_supplier_id on public.supplier_payment_schedules(supplier_id);
+create index idx_supplier_payment_schedules_next_date on public.supplier_payment_schedules(next_payment_date);

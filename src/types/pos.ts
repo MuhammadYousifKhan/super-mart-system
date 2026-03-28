@@ -47,8 +47,62 @@ export interface CustomerTransaction {
   orderId?: string; // Link to order if it's a credit sale
   type: 'credit' | 'payment'; // credit = sale on credit, payment = customer paid back
   amount: number;
+  paymentMethod?: 'cash' | 'card';
+  cardFeeRate?: number;
+  cardFeeAmount?: number;
+  totalCharged?: number;
   description: string;
   createdAt: string;
+}
+
+export type ReminderFrequency = 'daily' | 'weekly' | 'monthly';
+
+export type ScheduleFrequency = 'daily' | 'weekly' | 'monthly';
+
+export interface CustomerReminder {
+  id: string;
+  customerId: string;
+  frequency: ReminderFrequency;
+  nextReminderDate: string; // ISO date string (YYYY-MM-DD)
+  isActive: boolean;
+  note?: string;
+  createdAt: string;
+  lastTriggeredAt?: string;
+}
+
+export interface Supplier {
+  id: string;
+  name: string;
+  phone: string;
+  address: string;
+  contactPerson?: string;
+  notes?: string;
+  createdAt: string;
+  totalPurchased: number;
+  totalPaid: number;
+  balance: number;
+}
+
+export interface SupplierPurchase {
+  id: string;
+  supplierId: string;
+  description: string;
+  amount: number;
+  purchaseDate: string;
+  invoiceNumber?: string;
+  createdAt: string;
+}
+
+export interface SupplierPaymentSchedule {
+  id: string;
+  supplierId: string;
+  frequency: ScheduleFrequency;
+  nextPaymentDate: string;
+  amount: number;
+  isActive: boolean;
+  note?: string;
+  createdAt: string;
+  lastPaidAt?: string;
 }
 
 export type PaymentMethod = 'cash' | 'card' | 'transfer' | 'credit';

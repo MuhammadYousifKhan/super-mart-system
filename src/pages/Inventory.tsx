@@ -47,17 +47,19 @@ import { Badge } from '@/components/ui/badge';
 import { Plus, Trash2, Search, ArrowUpDown, Package, FolderOpen, Edit, X } from 'lucide-react';
 import { ProductForm } from '@/components/inventory/ProductForm';
 import { QuickAddModal } from '@/components/inventory/QuickAddModal';
+import { ReceiveSupplierStockModal } from '@/components/inventory/ReceiveSupplierStockModal';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import { formatPKR } from '@/pages/Analytics';
 
 export default function Inventory() {
-  const { products, categories, deleteProducts, addCategory, updateCategory, deleteCategory } = useStore();
+  const { products, categories, suppliers, deleteProducts, addCategory, updateCategory, deleteCategory } = useStore();
   const [sorting, setSorting] = useState<SortingState>([]);
   const [globalFilter, setGlobalFilter] = useState('');
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [isQuickAddOpen, setIsQuickAddOpen] = useState(false);
+  const [isReceiveSupplierStockOpen, setIsReceiveSupplierStockOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   
   // Category management state
@@ -345,6 +347,19 @@ export default function Inventory() {
             <Package className="w-4 h-4 mr-2" />
             Quick Add Stock
           </Button>
+          <Button
+            variant="outline"
+            onClick={() => {
+              if (suppliers.length === 0) {
+                toast.error('Please add at least one supplier first');
+                return;
+              }
+              setIsReceiveSupplierStockOpen(true);
+            }}
+          >
+            <Package className="w-4 h-4 mr-2" />
+            Receive Supplier Stock
+          </Button>
           <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
             <DialogTrigger asChild>
               <Button>
@@ -461,6 +476,12 @@ export default function Inventory() {
 
       {/* Quick Add Stock Modal */}
       <QuickAddModal open={isQuickAddOpen} onOpenChange={setIsQuickAddOpen} />
+
+      {/* Receive Stock from Supplier Modal */}
+      <ReceiveSupplierStockModal
+        open={isReceiveSupplierStockOpen}
+        onOpenChange={setIsReceiveSupplierStockOpen}
+      />
 
       {/* Category Management Dialog */}
       <Dialog open={isCategoryDialogOpen} onOpenChange={setIsCategoryDialogOpen}>

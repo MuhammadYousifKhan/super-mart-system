@@ -12,6 +12,7 @@ import POSTerminal from "./pages/POSTerminal";
 import Inventory from "./pages/Inventory";
 import Analytics from "./pages/Analytics";
 import Customers from "./pages/Customers";
+import Suppliers from "./pages/Suppliers";
 import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
 
@@ -37,6 +38,7 @@ function AppRoutes() {
       <Route path="/pos" element={<ProtectedRoute><AppLayout><POSTerminal /></AppLayout></ProtectedRoute>} />
       <Route path="/inventory" element={<ProtectedRoute adminOnly><AppLayout><Inventory /></AppLayout></ProtectedRoute>} />
       <Route path="/customers" element={<ProtectedRoute adminOnly><AppLayout><Customers /></AppLayout></ProtectedRoute>} />
+      <Route path="/suppliers" element={<ProtectedRoute adminOnly><AppLayout><Suppliers /></AppLayout></ProtectedRoute>} />
       <Route path="/analytics" element={<ProtectedRoute adminOnly><AppLayout><Analytics /></AppLayout></ProtectedRoute>} />
       <Route path="/my-sales" element={<ProtectedRoute><AppLayout><Analytics /></AppLayout></ProtectedRoute>} />
       <Route path="/settings" element={<ProtectedRoute adminOnly><AppLayout><Settings /></AppLayout></ProtectedRoute>} />
@@ -51,7 +53,12 @@ const App = () => (
       <TooltipProvider>
         <Toaster />
         <Sonner />
-        <BrowserRouter>
+        <BrowserRouter
+          future={{
+            v7_startTransition: true,
+            v7_relativeSplatPath: true,
+          }}
+        >
           <AuthProvider>
             <StoreProvider>
               <AppRoutes />
