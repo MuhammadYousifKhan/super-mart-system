@@ -137,9 +137,9 @@
     @apply py-2.5;
   }
 
-  /* Glassmorphism effect */
+  /* Glassmorphism effect - theme aware */
   .glass {
-    @apply bg-card/80 backdrop-blur-sm border border-border/50;
+    @apply bg-background/70 backdrop-blur-md border border-border/50;
   }
 }
 
@@ -368,17 +368,17 @@
   @apply bg-gradient-to-br from-primary/20 to-primary/5 flex items-center justify-center;
 }
 
-/* Glassmorphism Utilities */
+/* Glassmorphism Utilities - Refined for both modes */
 .glass {
-  @apply bg-background/60 backdrop-blur-xl border border-white/10;
+  @apply bg-background/60 backdrop-blur-xl border border-border/30 dark:border-white/10;
 }
 
 .glass-card {
-  @apply bg-card/50 backdrop-blur-lg border border-white/5 shadow-xl;
+  @apply bg-card/50 backdrop-blur-lg border border-border/40 dark:border-white/5 shadow-xl;
 }
 
 .glass-sidebar {
-  @apply bg-sidebar/80 backdrop-blur-xl border-r border-white/5;
+  @apply bg-sidebar/95 backdrop-blur-xl border-r border-border/50 dark:border-white/5;
 }
 
 /* Custom Scrollbar */
@@ -392,7 +392,7 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  @apply bg-white/10 rounded-full hover:bg-white/20 transition-colors;
+  @apply bg-muted-foreground/20 rounded-full hover:bg-muted-foreground/30 transition-colors;
 }
 
 /* Neon Glows */

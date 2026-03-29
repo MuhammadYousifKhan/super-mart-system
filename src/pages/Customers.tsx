@@ -302,69 +302,69 @@ export default function Customers() {
 
       {/* Header Stats */}
       <div className="grid gap-4 md:grid-cols-5">
-        <Card className="bg-gradient-to-br from-blue-500/10 to-cyan-500/10 border-blue-500/20">
+        <Card className="bg-blue-500/10 border-blue-500/20">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-blue-200">
+            <CardTitle className="text-sm font-medium text-blue-600 dark:text-blue-200">
               Total Customers
             </CardTitle>
-            <User className="h-4 w-4 text-blue-400" />
+            <User className="h-4 w-4 text-blue-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-blue-100">{customers.length}</div>
+            <div className="text-2xl font-bold text-blue-700 dark:text-blue-300">{customers.length}</div>
           </CardContent>
         </Card>
 
-        <Card className="bg-gradient-to-br from-yellow-500/10 to-orange-500/10 border-yellow-500/20">
+        <Card className="bg-yellow-500/10 border-yellow-500/20">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-yellow-200">
+            <CardTitle className="text-sm font-medium text-yellow-600 dark:text-yellow-200">
               Credit Customers
             </CardTitle>
-            <CreditCard className="h-4 w-4 text-yellow-400" />
+            <CreditCard className="h-4 w-4 text-yellow-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-yellow-100">
+            <div className="text-2xl font-bold text-yellow-700 dark:text-yellow-300">
               {customers.filter((c) => c.balance > 0).length}
             </div>
           </CardContent>
         </Card>
 
-        <Card className="bg-gradient-to-br from-red-500/10 to-pink-500/10 border-red-500/20">
+        <Card className="bg-red-500/10 border-red-500/20">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-red-200">
+            <CardTitle className="text-sm font-medium text-red-600 dark:text-red-200">
               Total Outstanding
             </CardTitle>
-            <Wallet className="h-4 w-4 text-red-400" />
+            <Wallet className="h-4 w-4 text-red-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-red-100">
+            <div className="text-2xl font-bold text-red-600 dark:text-red-400">
               Rs. {totalOutstanding.toLocaleString()}
             </div>
           </CardContent>
         </Card>
 
-        <Card className="bg-gradient-to-br from-green-500/10 to-emerald-500/10 border-green-500/20">
+        <Card className="bg-green-500/10 border-green-500/20">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-green-200">
+            <CardTitle className="text-sm font-medium text-green-600 dark:text-green-200">
               Total Recovered
             </CardTitle>
-            <DollarSign className="h-4 w-4 text-green-400" />
+            <DollarSign className="h-4 w-4 text-green-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-green-100">
+            <div className="text-2xl font-bold text-green-600 dark:text-green-400">
               Rs. {customers.reduce((sum, c) => sum + c.totalPaid, 0).toLocaleString()}
             </div>
           </CardContent>
         </Card>
 
-        <Card className="bg-gradient-to-br from-indigo-500/10 to-blue-500/10 border-indigo-500/20">
+        <Card className="bg-indigo-500/10 border-indigo-500/20">
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm font-medium text-indigo-200">
+            <CardTitle className="text-sm font-medium text-indigo-600 dark:text-indigo-200">
               Due Reminders
             </CardTitle>
-            <BellRing className="h-4 w-4 text-indigo-400" />
+            <BellRing className="h-4 w-4 text-indigo-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-indigo-100">{dueReminders.length}</div>
+            <div className="text-2xl font-bold text-indigo-700 dark:text-indigo-300">{dueReminders.length}</div>
           </CardContent>
         </Card>
       </div>
@@ -372,7 +372,7 @@ export default function Customers() {
       {dueReminders.length > 0 && (
         <Card className="border-indigo-500/30 bg-indigo-500/5">
           <CardHeader>
-            <CardTitle className="text-indigo-200 flex items-center gap-2">
+            <CardTitle className="text-indigo-700 dark:text-indigo-300 flex items-center gap-2">
               <BellRing className="h-5 w-5" />
               Due Udhaar Reminders
             </CardTitle>
@@ -384,14 +384,14 @@ export default function Customers() {
               return (
                 <div
                   key={reminder.id}
-                  className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-3 rounded-lg border border-indigo-500/20 bg-black/20"
+                  className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 p-3 rounded-lg border border-indigo-500/20 bg-muted/40"
                 >
                   <div>
-                    <p className="text-white font-medium">{customer?.name || 'Unknown Customer'}</p>
-                    <p className="text-xs text-gray-400">
+                    <p className="font-medium">{customer?.name || 'Unknown Customer'}</p>
+                    <p className="text-xs text-muted-foreground">
                       {reminder.frequency.toUpperCase()} reminder due on {reminder.nextReminderDate}
                     </p>
-                    {reminder.note && <p className="text-xs text-gray-300 mt-1">{reminder.note}</p>}
+                    {reminder.note && <p className="text-xs text-foreground/80 mt-1">{reminder.note}</p>}
                   </div>
                   <div className="flex gap-2">
                     <Button size="sm" onClick={() => markReminderTriggered(reminder.id)}>
@@ -413,11 +413,11 @@ export default function Customers() {
       )}
 
       {/* Main Content */}
-      <Card className="border-white/10 bg-black/20 backdrop-blur-xl">
+      <Card className="glass-card">
         <CardHeader>
           <div className="flex items-center justify-between">
             <div>
-              <CardTitle className="text-xl text-white">Customer List</CardTitle>
+              <CardTitle className="text-xl">Customer List</CardTitle>
               <CardDescription>
                 {activeTab === 'all' && `${displayedCustomers.length} total customers`}
                 {activeTab === 'credit' && `${displayedCustomers.length} customers with outstanding balance`}
@@ -434,16 +434,16 @@ export default function Customers() {
               placeholder="Search by name, phone, or NIC..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="pl-10 bg-white/5 border-white/10"
+              className="pl-10 bg-muted/30 border-border/50"
             />
           </div>
 
           {/* Customers Table */}
-          <div className="rounded-lg border border-white/10 overflow-x-auto">
+          <div className="rounded-lg border border-border/50 overflow-x-auto">
             <Table>
               <TableHeader>
-                <TableRow className="border-white/10 hover:bg-white/5">
-                  <TableHead className="text-gray-300 min-w-[180px]">Customer</TableHead>
+                <TableRow className="border-border/40 hover:bg-muted/30">
+                  <TableHead className="min-w-[180px]">Customer</TableHead>
                   <TableHead className="text-gray-300 min-w-[120px]">Phone</TableHead>
                   <TableHead className="text-gray-300 min-w-[150px]">Address</TableHead>
                   <TableHead className="text-gray-300 text-right min-w-[100px]">Total Credit</TableHead>
@@ -469,7 +469,7 @@ export default function Customers() {
                   displayedCustomers.map((customer) => (
                     <TableRow
                       key={customer.id}
-                      className="border-white/10 hover:bg-white/5"
+                      className="border-border/40 hover:bg-muted/40"
                     >
                       <TableCell>
                         <div className="flex items-center gap-3">
@@ -479,7 +479,7 @@ export default function Customers() {
                             </span>
                           </div>
                           <div>
-                            <p className="font-medium text-white">{customer.name}</p>
+                            <p className="font-medium text-foreground">{customer.name}</p>
                             {customer.nic && (
                               <p className="text-xs text-gray-400">NIC: {customer.nic}</p>
                             )}
@@ -642,9 +642,9 @@ export default function Customers() {
 
       {/* Edit Customer Modal */}
       <Dialog open={showEditModal} onOpenChange={setShowEditModal}>
-        <DialogContent className="bg-gray-900 border-white/10">
+        <DialogContent>
           <DialogHeader>
-            <DialogTitle className="text-white">Edit Customer</DialogTitle>
+            <DialogTitle>Edit Customer</DialogTitle>
             <DialogDescription>Update customer information.</DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
@@ -656,7 +656,7 @@ export default function Customers() {
                   value={formData.name}
                   onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                   placeholder="Customer name"
-                  className="pl-10 bg-white/5 border-white/10"
+                  className="pl-10 bg-muted/40 border-border/50"
                 />
               </div>
             </div>
@@ -668,7 +668,7 @@ export default function Customers() {
                   value={formData.phone}
                   onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
                   placeholder="03XX-XXXXXXX"
-                  className="pl-10 bg-white/5 border-white/10"
+                  className="pl-10 bg-muted/40 border-border/50"
                 />
               </div>
             </div>
@@ -680,7 +680,7 @@ export default function Customers() {
                   value={formData.address}
                   onChange={(e) => setFormData({ ...formData, address: e.target.value })}
                   placeholder="Full address"
-                  className="pl-10 bg-white/5 border-white/10"
+                  className="pl-10 bg-muted/40 border-border/50"
                 />
               </div>
             </div>
@@ -692,7 +692,7 @@ export default function Customers() {
                   value={formData.nic}
                   onChange={(e) => setFormData({ ...formData, nic: e.target.value })}
                   placeholder="XXXXX-XXXXXXX-X"
-                  className="pl-10 bg-white/5 border-white/10"
+                  className="pl-10 bg-muted/40 border-border/50"
                 />
               </div>
             </div>
@@ -715,9 +715,9 @@ export default function Customers() {
 
       {/* Delete Confirmation Dialog */}
       <AlertDialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
-        <AlertDialogContent className="bg-gray-900 border-white/10">
+        <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle className="text-white">Delete Customer</AlertDialogTitle>
+            <AlertDialogTitle>Delete Customer</AlertDialogTitle>
             <AlertDialogDescription>
               Are you sure you want to delete "{selectedCustomer?.name}"? This will also
               delete all associated transaction history. This action cannot be undone.
@@ -737,9 +737,9 @@ export default function Customers() {
 
       {/* Ledger Modal (Digi Khata) */}
       <Dialog open={showLedgerModal} onOpenChange={setShowLedgerModal}>
-        <DialogContent className="bg-gray-900 border-white/10 max-w-2xl">
+        <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle className="text-white flex items-center gap-2">
+            <DialogTitle className="flex items-center gap-2">
               <History className="h-5 w-5" />
               Ledger - {selectedCustomer?.name}
             </DialogTitle>
@@ -752,20 +752,20 @@ export default function Customers() {
             {selectedCustomer && (
               <div className="grid grid-cols-3 gap-3 mb-4">
                 <div className="p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/20">
-                  <p className="text-xs text-yellow-300">Total Credit</p>
-                  <p className="text-lg font-bold text-yellow-400">
+                  <p className="text-xs text-yellow-700 dark:text-yellow-300">Total Credit</p>
+                  <p className="text-lg font-bold text-yellow-600 dark:text-yellow-400">
                     Rs. {selectedCustomer.totalCredit.toLocaleString()}
                   </p>
                 </div>
                 <div className="p-3 rounded-lg bg-green-500/10 border border-green-500/20">
-                  <p className="text-xs text-green-300">Total Paid</p>
-                  <p className="text-lg font-bold text-green-400">
+                  <p className="text-xs text-green-700 dark:text-green-300">Total Paid</p>
+                  <p className="text-lg font-bold text-green-600 dark:text-green-400">
                     Rs. {selectedCustomer.totalPaid.toLocaleString()}
                   </p>
                 </div>
                 <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20">
-                  <p className="text-xs text-red-300">Balance Due</p>
-                  <p className="text-lg font-bold text-red-400">
+                  <p className="text-xs text-red-700 dark:text-red-300">Balance Due</p>
+                  <p className="text-lg font-bold text-red-600 dark:text-red-400">
                     Rs. {selectedCustomer.balance.toLocaleString()}
                   </p>
                 </div>
@@ -807,10 +807,10 @@ export default function Customers() {
                               )}
                             </div>
                             <div>
-                              <p className="text-sm font-medium text-white">
+                              <p className="text-sm font-medium">
                                 {transaction.description}
                               </p>
-                              <p className="text-xs text-gray-400">
+                              <p className="text-xs text-muted-foreground">
                                 {formatDate(transaction.createdAt)}
                               </p>
                               {transaction.type === 'payment' && transaction.paymentMethod && (
@@ -862,13 +862,13 @@ export default function Customers() {
 
       {/* Payment Modal */}
       <Dialog open={showPaymentModal} onOpenChange={setShowPaymentModal}>
-        <DialogContent className="bg-gray-900 border-white/10">
+        <DialogContent>
           <DialogHeader>
-            <DialogTitle className="text-white">Record Payment</DialogTitle>
+            <DialogTitle>Record Payment</DialogTitle>
             <DialogDescription>
               Record a payment from {selectedCustomer?.name}
               {selectedCustomer && (
-                <span className="block mt-1 text-red-400">
+                <span className="block mt-1 text-red-500 font-medium">
                   Outstanding: Rs. {selectedCustomer.balance.toLocaleString()}
                 </span>
               )}
@@ -876,25 +876,25 @@ export default function Customers() {
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
-              <Label className="text-gray-200">Amount *</Label>
+              <Label>Amount *</Label>
               <div className="relative">
-                <DollarSign className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                <DollarSign className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   type="number"
                   value={paymentAmount}
                   onChange={(e) => setPaymentAmount(e.target.value)}
                   placeholder="Enter amount"
-                  className="pl-10 bg-white/5 border-white/10"
+                  className="pl-10 bg-muted/40 border-border/50"
                 />
               </div>
             </div>
             <div className="space-y-2">
-              <Label className="text-gray-200">Payment Method</Label>
+              <Label>Payment Method</Label>
               <Select
                 value={paymentMethod}
                 onValueChange={(value) => setPaymentMethod(value as 'cash' | 'card')}
               >
-                <SelectTrigger className="bg-white/5 border-white/10">
+                <SelectTrigger className="bg-muted/40 border-border/50">
                   <SelectValue placeholder="Select payment method" />
                 </SelectTrigger>
                 <SelectContent>
@@ -905,21 +905,21 @@ export default function Customers() {
             </div>
             {paymentMethod === 'card' && (parseFloat(paymentAmount) || 0) > 0 && (
               <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-sm">
-                <p className="text-amber-300">
+                <p className="text-amber-600 font-medium">
                   Card charge (2%): Rs. {(((parseFloat(paymentAmount) || 0) * 2) / 100).toLocaleString()}
                 </p>
-                <p className="text-amber-200 mt-1">
+                <p className="text-amber-700 mt-1">
                   Total charged to customer: Rs. {((parseFloat(paymentAmount) || 0) * 1.02).toLocaleString()}
                 </p>
               </div>
             )}
             <div className="space-y-2">
-              <Label className="text-gray-200">Description (Optional)</Label>
+              <Label>Description (Optional)</Label>
               <Input
                 value={paymentDescription}
                 onChange={(e) => setPaymentDescription(e.target.value)}
                 placeholder="e.g., Cash payment, Bank transfer..."
-                className="bg-white/5 border-white/10"
+                className="bg-muted/40 border-border/50"
               />
             </div>
           </div>
@@ -946,7 +946,7 @@ export default function Customers() {
       <Dialog open={showReminderModal} onOpenChange={setShowReminderModal}>
         <DialogContent className="bg-gray-900 border-white/10">
           <DialogHeader>
-            <DialogTitle className="text-white flex items-center gap-2">
+            <DialogTitle className="flex items-center gap-2">
               <Bell className="h-5 w-5" />
               Schedule Udhaar Reminder
             </DialogTitle>
@@ -956,12 +956,12 @@ export default function Customers() {
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
-              <Label className="text-gray-200">Frequency</Label>
+              <Label>Frequency</Label>
               <Select
                 value={reminderFrequency}
                 onValueChange={(value) => setReminderFrequency(value as ReminderFrequency)}
               >
-                <SelectTrigger className="bg-white/5 border-white/10">
+                <SelectTrigger className="bg-muted/40 border-border/50">
                   <SelectValue placeholder="Select frequency" />
                 </SelectTrigger>
                 <SelectContent>
@@ -973,42 +973,42 @@ export default function Customers() {
             </div>
 
             <div className="space-y-2">
-              <Label className="text-gray-200">Next Reminder Date</Label>
+              <Label>Next Reminder Date</Label>
               <div className="relative">
-                <CalendarDays className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                <CalendarDays className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   type="date"
                   value={nextReminderDate}
                   onChange={(e) => setNextReminderDate(e.target.value)}
-                  className="pl-10 bg-white/5 border-white/10"
+                  className="pl-10 bg-muted/40 border-border/50"
                 />
               </div>
             </div>
 
             <div className="space-y-2">
-              <Label className="text-gray-200">Note (Optional)</Label>
+              <Label>Note (Optional)</Label>
               <Input
                 value={reminderNote}
                 onChange={(e) => setReminderNote(e.target.value)}
                 placeholder="e.g., Call after salary date"
-                className="bg-white/5 border-white/10"
+                className="bg-muted/40 border-border/50"
               />
             </div>
 
             {selectedCustomer && getCustomerReminders(selectedCustomer.id).length > 0 && (
               <div className="space-y-2">
-                <Label className="text-gray-200">Existing Reminders</Label>
+                <Label>Existing Reminders</Label>
                 <div className="space-y-2 max-h-40 overflow-y-auto">
                   {getCustomerReminders(selectedCustomer.id).map((reminder) => (
                     <div
                       key={reminder.id}
-                      className="p-2 rounded border border-white/10 bg-black/20 flex items-center justify-between"
+                      className="p-2 rounded border border-border/50 bg-muted/30 flex items-center justify-between"
                     >
                       <div>
-                        <p className="text-sm text-white">
+                        <p className="text-sm font-medium">
                           {reminder.frequency.toUpperCase()} - {reminder.nextReminderDate}
                         </p>
-                        {reminder.note && <p className="text-xs text-gray-400">{reminder.note}</p>}
+                        {reminder.note && <p className="text-xs text-muted-foreground">{reminder.note}</p>}
                       </div>
                       <Button
                         size="sm"

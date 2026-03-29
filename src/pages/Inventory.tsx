@@ -224,7 +224,7 @@ export default function Inventory() {
           if (!product.barcode) return <span className="text-gray-400">-</span>;
           return (
             <div className="flex items-center gap-2">
-              <code className="text-xs bg-gray-100 px-2 py-1 rounded">{product.barcode}</code>
+              <code className="text-xs bg-muted px-2 py-1 rounded">{product.barcode}</code>
               {product.barcodeEnabled && <Badge variant="outline">✓ Active</Badge>}
             </div>
           );

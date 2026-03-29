@@ -445,16 +445,16 @@ export default function Analytics() {
                 <DollarSign className="w-4 h-4 text-primary" />
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold">{formatPKR(stats.revenue)}</div>
+                <div className="text-2xl font-bold text-primary">{formatPKR(stats.revenue)}</div>
               </CardContent>
             </Card>
             <Card>
               <CardHeader className="flex flex-row items-center justify-between pb-2">
                 <CardTitle className="text-sm font-medium text-muted-foreground">Net Profit</CardTitle>
-                <TrendingUp className="w-4 h-4 text-success" />
+                <TrendingUp className="w-4 h-4 text-green-600 dark:text-green-400" />
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold text-success">{formatPKR(stats.netProfit)}</div>
+                <div className="text-2xl font-bold text-green-600 dark:text-green-400">{formatPKR(stats.netProfit)}</div>
               </CardContent>
             </Card>
             <Card>
@@ -515,8 +515,8 @@ export default function Analytics() {
                 <div className="text-xl font-bold">{formatPKR(stats.creditSales)}</div>
                 {stats.creditSales > 0 && (
                   <div className="mt-2 flex gap-2 text-xs">
-                    <span className="text-red-400">Due: {formatPKR(stats.creditDue)}</span>
-                    <span className="text-green-400">Paid: {formatPKR(stats.creditPaid)}</span>
+                    <span className="text-red-600 dark:text-red-400 font-medium">Due: {formatPKR(stats.creditDue)}</span>
+                    <span className="text-green-600 dark:text-green-400 font-medium">Paid: {formatPKR(stats.creditPaid)}</span>
                   </div>
                 )}
               </CardContent>

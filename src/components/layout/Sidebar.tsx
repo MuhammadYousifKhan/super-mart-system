@@ -63,10 +63,10 @@ export function Sidebar() {
   return (
     <>
       {/* Mobile Header Bar */}
-      <div className="md:hidden fixed top-0 left-0 right-0 z-50 glass-sidebar border-b border-white/10 px-4 py-3 flex items-center justify-between">
+      <div className="md:hidden fixed top-0 left-0 right-0 z-50 glass-sidebar border-b border-border/50 px-4 py-3 flex items-center justify-between">
         <div className="flex items-center gap-3">
           {settings.logo ? (
-            <div className="w-8 h-8 rounded-lg overflow-hidden bg-sidebar-accent/50 flex items-center justify-center border border-white/10">
+            <div className="w-8 h-8 rounded-lg overflow-hidden bg-sidebar-accent/50 flex items-center justify-center border border-border/50">
               <img
                 src={settings.logo}
                 alt={settings.storeName}
@@ -85,7 +85,7 @@ export function Sidebar() {
         <Button
           variant="ghost"
           size="sm"
-          className="text-white hover:bg-white/10 p-2"
+          className="text-sidebar-foreground hover:bg-sidebar-accent/50 p-2"
           onClick={() => setIsMobileOpen(!isMobileOpen)}
         >
           {isMobileOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
@@ -110,10 +110,10 @@ export function Sidebar() {
         isMobileOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"
       )}>
       {/* Logo/Brand Section */}
-      <div className="p-6 border-b border-white/5">
+      <div className="p-6 border-b border-border/50">
         <div className="flex items-center gap-3">
           {settings.logo ? (
-            <div className="w-10 h-10 rounded-xl overflow-hidden bg-sidebar-accent/50 backdrop-blur-sm flex items-center justify-center border border-white/10 shadow-inner">
+            <div className="w-10 h-10 rounded-xl overflow-hidden bg-sidebar-accent/50 backdrop-blur-sm flex items-center justify-center border border-border/50 shadow-inner">
               <img
                 src={settings.logo}
                 alt={settings.storeName}
@@ -126,7 +126,7 @@ export function Sidebar() {
             </div>
           )}
           <div className="flex-1 min-w-0">
-            <h1 className="font-bold text-lg tracking-tight text-white truncate">
+            <h1 className="font-bold text-lg tracking-tight text-sidebar-foreground truncate">
               {settings.storeName || 'POS System'}
             </h1>
             <div className="flex items-center gap-1.5">
@@ -150,7 +150,7 @@ export function Sidebar() {
                 'flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all duration-300 relative overflow-hidden group',
                 isActive
                   ? 'text-primary bg-primary/10 border border-primary/20 shadow-[0_0_20px_hsl(var(--primary)/0.15)]'
-                  : 'text-sidebar-foreground/80 hover:text-white hover:bg-white/5 border border-transparent'
+                  : 'text-sidebar-foreground/80 hover:text-sidebar-foreground hover:bg-sidebar-accent border border-transparent'
               )
             }
           >
@@ -166,13 +166,13 @@ export function Sidebar() {
       </nav>
 
       {/* User Section */}
-      <div className="p-4 border-t border-white/5 bg-black/20">
+      <div className="p-4 border-t border-border/50 bg-sidebar-accent/30">
         <div className="flex items-center gap-3 mb-4 px-2">
           <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-primary/80 to-purple-500/80 flex items-center justify-center text-xs font-bold text-white shadow-lg">
             {user?.fullName?.charAt(0)}
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-medium text-white truncate">
+            <p className="text-sm font-medium text-sidebar-foreground truncate">
               {user?.fullName}
             </p>
             <p className="text-xs text-sidebar-foreground/60 truncate">{user?.email}</p>
@@ -181,7 +181,7 @@ export function Sidebar() {
         <div className="space-y-2">
           <Button
             variant="ghost"
-            className="w-full justify-start text-sidebar-foreground/70 hover:text-white hover:bg-white/5 transition-all border border-transparent hover:border-white/5 rounded-xl"
+            className="w-full justify-start text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent transition-all border border-transparent hover:border-border/30 rounded-xl"
             onClick={toggle}
           >
             {theme === 'dark' ? <Sun className="w-4 h-4 mr-3" /> : <Moon className="w-4 h-4 mr-3" />}
@@ -190,7 +190,7 @@ export function Sidebar() {
 
           <Button
             variant="ghost"
-            className="w-full justify-start text-sidebar-foreground/70 hover:text-white hover:bg-white/5 transition-all border border-transparent hover:border-white/5 rounded-xl"
+            className="w-full justify-start text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent transition-all border border-transparent hover:border-border/30 rounded-xl"
             onClick={logout}
           >
             <LogOut className="w-4 h-4 mr-3" />

@@ -135,7 +135,7 @@ export default function POSTerminal() {
   return (
     <div className="flex flex-col h-full relative">
       {/* Header with Search */}
-      <div className="p-6 border-b border-white/5 bg-background/40 backdrop-blur-md sticky top-0 z-10">
+      <div className="p-6 border-b border-border/50 bg-background/40 backdrop-blur-md sticky top-0 z-10">
         <div className="relative max-w-3xl mx-auto">
           <div className="absolute inset-0 bg-primary/20 blur-xl rounded-full opacity-20 animate-pulse" />
           <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-primary" />
@@ -145,7 +145,7 @@ export default function POSTerminal() {
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyDown={handleSearchKeyDown}
             placeholder="Scan barcode or search product... (F2)"
-            className="pl-12 h-14 text-lg barcode-input bg-black/40 border-white/10 focus:border-primary/50 focus:ring-primary/20 rounded-xl shadow-inner transition-all"
+            className="pl-12 h-14 text-lg barcode-input bg-muted/50 border-border/50 focus:border-primary/50 focus:ring-primary/20 rounded-xl shadow-inner transition-all"
           />
         </div>
         <div className="flex justify-center gap-6 mt-3 text-xs font-medium text-muted-foreground/80">
@@ -181,7 +181,7 @@ export default function POSTerminal() {
                 <div className="absolute inset-0 bg-gradient-to-br from-primary/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
                 
                 <div className="relative z-10 flex justify-between items-start gap-2 mb-3">
-                  <span className="font-mono text-[10px] text-muted-foreground/70 bg-black/30 px-1.5 py-0.5 rounded border border-white/5 truncate max-w-[70%]">
+                  <span className="font-mono text-[10px] text-muted-foreground/70 bg-muted/50 px-1.5 py-0.5 rounded border border-border/50 truncate max-w-[70%]">
                     {product.sku}
                   </span>
                   {isLowStock && (
@@ -201,7 +201,7 @@ export default function POSTerminal() {
                 </p>
                 
                 <div className="relative z-10 mt-3 flex items-end justify-between">
-                  <p className="text-lg font-bold text-white tracking-tight">
+                  <p className="text-lg font-bold text-foreground tracking-tight">
                     {formatPKR(product.sellingPrice)}
                   </p>
                   <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center text-primary opacity-0 group-hover:opacity-100 transform translate-y-2 group-hover:translate-y-0 transition-all duration-300">
@@ -223,7 +223,7 @@ export default function POSTerminal() {
       </div>
 
       {/* Bottom Cart Button */}
-      <div className="p-6 border-t border-white/5 bg-background/60 backdrop-blur-md">
+      <div className="p-6 border-t border-border/50 bg-background/60 backdrop-blur-md">
         <Button
           size="lg"
           className="w-full h-16 text-lg relative overflow-hidden group bg-primary hover:bg-primary/90 text-primary-foreground shadow-[0_0_20px_hsl(var(--primary)/0.3)] hover:shadow-[0_0_30px_hsl(var(--primary)/0.5)] transition-all duration-300 rounded-xl"
@@ -278,16 +278,16 @@ export default function POSTerminal() {
               )}
             </div>
             
-            <div className="bg-black/40 p-4 sm:p-6 rounded-xl mb-6 text-center border border-white/5">
+            <div className="bg-muted/30 p-4 sm:p-6 rounded-xl mb-6 text-center border border-border/50">
               <p className="text-sm text-muted-foreground mb-1">Total Amount</p>
               <p className="text-2xl sm:text-3xl font-bold text-primary mb-4">
                 {formatPKR(lastOrder.totalAmount)}
               </p>
               
-              <div className="grid grid-cols-2 gap-2 text-xs sm:text-sm text-muted-foreground border-t border-white/5 pt-4">
+              <div className="grid grid-cols-2 gap-2 text-xs sm:text-sm text-muted-foreground border-t border-border/50 pt-4">
                 <div>
                   <p className="text-muted-foreground/70">Payment</p>
-                  <p className="text-white font-medium capitalize">
+                  <p className="text-foreground font-medium capitalize">
                     {lastOrder.paymentMethod}
                     {lastOrder.transferType && ` (${lastOrder.transferType})`}
                   </p>
@@ -295,15 +295,15 @@ export default function POSTerminal() {
                 {lastOrder.transactionId && (
                   <div>
                     <p className="text-muted-foreground/70">TID</p>
-                    <p className="text-white font-medium">{lastOrder.transactionId}</p>
+                    <p className="text-foreground font-medium">{lastOrder.transactionId}</p>
                   </div>
                 )}
               </div>
 
               {lastOrder.changeGiven !== undefined && lastOrder.changeGiven > 0 && (
-                <div className="pt-4 border-t border-white/5 mt-4">
+                <div className="pt-4 border-t border-border/50 mt-4">
                   <p className="text-sm text-muted-foreground mb-1">Change Due</p>
-                  <p className="text-xl font-mono text-white">
+                  <p className="text-xl font-mono text-foreground">
                     {formatPKR(lastOrder.changeGiven)}
                   </p>
                 </div>

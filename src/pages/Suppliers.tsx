@@ -269,9 +269,9 @@ export default function Suppliers() {
             {dueSchedules.map((schedule) => {
               const supplier = getSupplierById(schedule.supplierId);
               return (
-                <div key={schedule.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 p-3 border rounded-md">
+                <div key={schedule.id} className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 p-3 border border-border/40 bg-muted/30 rounded-md">
                   <div>
-                    <p className="font-medium">{supplier?.name || 'Unknown Supplier'}</p>
+                    <p className="font-medium text-foreground">{supplier?.name || 'Unknown Supplier'}</p>
                     <p className="text-xs text-muted-foreground">
                       {schedule.frequency.toUpperCase()} - Due {schedule.nextPaymentDate} - {formatPKR(schedule.amount)}
                     </p>
@@ -504,13 +504,13 @@ export default function Suppliers() {
               <CardTitle>Active Schedules</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
-              {supplierPaymentSchedules.length === 0 ? (
+            {supplierPaymentSchedules.length === 0 ? (
                 <p className="text-sm text-muted-foreground">No schedules yet.</p>
               ) : (
                 supplierPaymentSchedules.map((schedule) => (
-                  <div key={schedule.id} className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 p-3 border rounded-md">
+                  <div key={schedule.id} className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 p-3 border border-border/40 bg-muted/20 rounded-md">
                     <div>
-                      <p className="font-medium">{getSupplierById(schedule.supplierId)?.name || 'Unknown Supplier'}</p>
+                      <p className="font-medium text-foreground">{getSupplierById(schedule.supplierId)?.name || 'Unknown Supplier'}</p>
                       <p className="text-xs text-muted-foreground">
                         {schedule.frequency.toUpperCase()} | Next: {schedule.nextPaymentDate} | Amount: {formatPKR(schedule.amount)}
                       </p>
