@@ -4,27 +4,43 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
+import { Label } from '@/components/ui/label';
 import { CartDrawer } from '@/components/pos/CartDrawer';
 import { CheckoutModal } from '@/components/pos/CheckoutModal';
 import { HeldCartsPanel } from '@/components/pos/HeldCartsPanel';
 import { Receipt } from '@/components/pos/Receipt';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { formatPKR } from '@/pages/Analytics';
 import {
   Search,
   ShoppingCart,
+  History,
+  XCircle,
+  Pencil,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Order } from '@/types/pos';
+import { format } from 'date-fns';
 
 export default function POSTerminal() {
   const {
     products,
     cart,
+    orders,
     addToCart,
     clearCart,
     heldCarts,
     settings,
     calculateTotal,
+    updateOrder,
+    cancelOrder,
   } = useStore();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -32,7 +48,15 @@ export default function POSTerminal() {
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [lastOrder, setLastOrder] = useState<Order | null>(null);
   const [showReceipt, setShowReceipt] = useState(false);
+  const [isOrdersDialogOpen, setIsOrdersDialogOpen] = useState(false);
+  const [isEditBillDialogOpen, setIsEditBillDialogOpen] = useState(false);
+  const [isManageBillsDialogOpen, setIsManageBillsDialogOpen] = useState(false);
+  const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
+  const [editClientName, setEditClientName] = useState('');
+  const [editClientPhone, setEditClientPhone] = useState('');
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  const recentOrders = orders.slice(0, 50);
 
   const filteredProducts = products.filter(
     (p) =>
@@ -98,6 +122,32 @@ export default function POSTerminal() {
     setShowReceipt(true);
   };
 
+  const openEditBillDialog = (order: Order) => {
+    setSelectedOrder(order);
+    setEditClientName(order.clientName || '');
+    setEditClientPhone(order.clientPhone || '');
+    setIsEditBillDialogOpen(true);
+  };
+
+  const handleSaveBillEdit = async () => {
+    if (!selectedOrder) return;
+    await updateOrder(selectedOrder.id, {
+      clientName: editClientName.trim() || undefined,
+      clientPhone: editClientPhone.trim() || undefined,
+    });
+    toast.success('Bill updated successfully');
+    setIsEditBillDialogOpen(false);
+  };
+
+  const handleCancelBill = async (order: Order) => {
+    if (order.status === 'refunded') {
+      toast.info('Bill is already cancelled');
+      return;
+    }
+    await cancelOrder(order.id);
+    toast.success('Bill cancelled and stock restored');
+  };
+
   const handlePrintReceipt = useCallback(() => {
     window.print();
   }, []);
@@ -152,6 +202,19 @@ export default function POSTerminal() {
           <span className="flex items-center gap-1.5"><span className="hotkey bg-primary/10 text-primary border-primary/20">F2</span> Focus search</span>
           <span className="flex items-center gap-1.5"><span className="hotkey bg-primary/10 text-primary border-primary/20">F12</span> Checkout</span>
           <span className="flex items-center gap-1.5"><span className="hotkey bg-primary/10 text-primary border-primary/20">Esc</span> Clear/Close</span>
+        </div>
+        
+        {/* Bill Management */}
+        <div className="flex justify-end mt-4 px-2">
+          <Button 
+            variant="outline" 
+            size="sm" 
+            className="border-primary/20 text-primary hover:bg-primary/10"
+            onClick={() => setIsManageBillsDialogOpen(true)}
+          >
+            <Receipt className="w-4 h-4 mr-2" />
+            Manage Recent Bills
+          </Button>
         </div>
       </div>
 
@@ -254,6 +317,95 @@ export default function POSTerminal() {
           setIsCheckoutOpen(true);
         }}
       />
+
+      {/* Bill Management Modal */}
+      <Dialog open={isManageBillsDialogOpen} onOpenChange={setIsManageBillsDialogOpen}>
+        <DialogContent className="max-w-4xl max-h-[85vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="text-2xl font-bold flex items-center gap-2">
+              <Receipt className="w-6 h-6 text-primary" />
+              Manage Recent Bills
+            </DialogTitle>
+          </DialogHeader>
+          <div className="flex-1 overflow-auto mt-4 px-1">
+             <div className="space-y-4">
+              {recentOrders.length === 0 ? (
+                 <div className="text-center text-muted-foreground p-8">
+                    No recent bills found.
+                 </div>
+              ) : (
+                recentOrders.map(order => (
+                  <div key={order.id} className="glass-card p-4 rounded-xl flex items-center justify-between gap-4">
+                    <div>
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="font-semibold">{order.receiptNumber}</span>
+                        <Badge variant={order.status === 'completed' ? 'default' : order.status === 'refunded' ? 'destructive' : 'secondary'}>
+                          {order.status}
+                        </Badge>
+                      </div>
+                      <div className="text-sm text-muted-foreground flex flex-col gap-1">
+                        {order.clientName && <span>Client: {order.clientName} {order.clientPhone && `(${order.clientPhone})`}</span>}
+                        <span>Date: {format(new Date(order.createdAt), 'MMM dd, yyyy HH:mm')}</span>
+                        <span>Total: {formatPKR(order.totalAmount)}</span>
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button variant="outline" size="sm" onClick={() => openEditBillDialog(order)}>
+                        Edit Info
+                      </Button>
+                      <Button 
+                        variant="destructive" 
+                        size="sm" 
+                        disabled={order.status === 'refunded'}
+                        onClick={() => {
+                          if (window.confirm('Are you sure you want to cancel this bill? This will restore stock limits.')) {
+                            handleCancelBill(order);
+                          }
+                        }}
+                      >
+                        Cancel Bill
+                      </Button>
+                    </div>
+                  </div>
+                ))
+              )}
+             </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+
+      {/* Edit Bill Details Dialog */}
+      <Dialog open={isEditBillDialogOpen} onOpenChange={setIsEditBillDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Edit Bill Details</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>Client Name</Label>
+              <Input 
+                value={editClientName} 
+                onChange={(e) => setEditClientName(e.target.value)} 
+                placeholder="Enter client name" 
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Client Phone</Label>
+              <Input 
+                value={editClientPhone} 
+                onChange={(e) => setEditClientPhone(e.target.value)} 
+                placeholder="Enter client phone" 
+              />
+            </div>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setIsEditBillDialogOpen(false)}>Cancel</Button>
+            <Button onClick={handleSaveBillEdit}>Save Changes</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
 
       {/* Checkout Modal */}
       <CheckoutModal

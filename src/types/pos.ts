@@ -13,12 +13,19 @@ export interface Category {
   description: string;
 }
 
+export interface Unit {
+  id: string;
+  name: string;
+  description?: string;
+}
+
 export interface Product {
   id: string;
   sku: string;
   name: string;
   description: string;
   categoryId: string;
+  unitId: string;
   costPrice: number;
   sellingPrice: number;
   stockQuantity: number;

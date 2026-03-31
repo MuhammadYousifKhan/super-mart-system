@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useRef, useCallb
 import {
   Product,
   Category,
+  Unit,
   Order,
   OrderItem,
   StoreSettings,
@@ -42,6 +43,13 @@ interface StoreContextType {
   updateProduct: (id: string, product: Partial<Product>) => void;
   deleteProducts: (ids: string[]) => void;
   getProductBySku: (sku: string) => Product | undefined;
+
+  // Units
+  units: Unit[];
+  addUnit: (unit: Omit<Unit, 'id'>) => void;
+  updateUnit: (id: string, unit: Partial<Unit>) => void;
+  deleteUnit: (id: string) => void;
+  getUnitById: (id: string) => Unit | undefined;
 
   // Categories
   categories: Category[];
@@ -110,7 +118,10 @@ interface StoreContextType {
   orders: Order[];
   orderItems: OrderItem[];
   createOrder: (options: CreateOrderOptions) => Promise<Order>;
+  updateOrder: (id: string, updates: Partial<Order>) => Promise<void>;
+  cancelOrder: (id: string) => Promise<void>;
   getOrderItems: (orderId: string) => OrderItem[];
+  getCustomerOrders: (customerId: string) => Order[];
 
   // Settings
   settings: StoreSettings;
@@ -220,6 +231,17 @@ function calculateNextScheduleDate(currentDate: string, frequency: ScheduleFrequ
   return baseDate.toISOString().slice(0, 10);
 }
 
+const SAMPLE_UNITS: Unit[] = [
+  { id: 'unit-pcs', name: 'Pieces', description: 'Individual pieces' },
+  { id: 'unit-pkt', name: 'Packets', description: 'Packets/Packs' },
+  { id: 'unit-kg', name: 'Kilograms', description: 'Weight in kilograms' },
+  { id: 'unit-ltr', name: 'Liters', description: 'Volume in liters' },
+  { id: 'unit-box', name: 'Boxes', description: 'Box/carton' },
+  { id: 'unit-dozen', name: 'Dozens', description: 'Set of 12 items' },
+  { id: 'unit-gram', name: 'Grams', description: 'Weight in grams' },
+  { id: 'unit-ml', name: 'Milliliters', description: 'Volume in milliliters' },
+];
+
 const SAMPLE_CATEGORIES: Category[] = [
   { id: 'cat-grocery', name: 'Grocery', description: 'Fresh and packaged grocery items' },
   { id: 'cat-toys-sports', name: 'Toys/Sports', description: 'Toys and sports equipment' },
@@ -232,12 +254,12 @@ const SAMPLE_CATEGORIES: Category[] = [
 ];
 
 const SAMPLE_PRODUCTS: Product[] = [
-  { id: 'prod-1', sku: 'GROC-001', name: 'Organic Coffee', description: '500g ground coffee', categoryId: 'cat-grocery', costPrice: 1200, sellingPrice: 2200, stockQuantity: 65, lowStockThreshold: 15, expiryDate: '2026-09-15', barcode: '9780201379624', barcodeEnabled: true },
-  { id: 'prod-2', sku: 'GROC-002', name: 'Green Tea Pack', description: '50 tea bags', categoryId: 'cat-grocery', costPrice: 600, sellingPrice: 1100, stockQuantity: 3, lowStockThreshold: 10, expiryDate: '2026-12-31', barcode: '9780067234005', barcodeEnabled: true },
-  { id: 'prod-3', sku: 'FOOD-001', name: 'Milk 1L', description: 'Fresh milk', categoryId: 'cat-food', costPrice: 80, sellingPrice: 150, stockQuantity: 25, lowStockThreshold: 5, expiryDate: '2026-04-02', barcode: '5000157101066', barcodeEnabled: true },
-  { id: 'prod-4', sku: 'FOOD-002', name: 'Bread', description: 'Whole wheat bread', categoryId: 'cat-food', costPrice: 60, sellingPrice: 120, stockQuantity: 8, lowStockThreshold: 10, expiryDate: '2026-03-28', barcode: '5000275041222', barcodeEnabled: true },
-  { id: 'prod-5', sku: 'FROZEN-001', name: 'Ice Cream', description: 'Vanilla ice cream', categoryId: 'cat-frozen', costPrice: 150, sellingPrice: 300, stockQuantity: 12, lowStockThreshold: 5, expiryDate: '2027-01-31', barcode: '0020000028420', barcodeEnabled: true },
-  { id: 'prod-6', sku: 'CLEAN-001', name: 'Dish Soap', description: '500ml dish cleaning liquid', categoryId: 'cat-cleaning', costPrice: 120, sellingPrice: 200, stockQuantity: 35, lowStockThreshold: 8, barcode: '5901362011915', barcodeEnabled: true },
+  { id: 'prod-1', sku: 'GROC-001', name: 'Organic Coffee', description: '500g ground coffee', categoryId: 'cat-grocery', unitId: 'unit-pkt', costPrice: 1200, sellingPrice: 2200, stockQuantity: 65, lowStockThreshold: 15, expiryDate: '2026-09-15', barcode: '9780201379624', barcodeEnabled: true },
+  { id: 'prod-2', sku: 'GROC-002', name: 'Green Tea Pack', description: '50 tea bags', categoryId: 'cat-grocery', unitId: 'unit-box', costPrice: 600, sellingPrice: 1100, stockQuantity: 3, lowStockThreshold: 10, expiryDate: '2026-12-31', barcode: '9780067234005', barcodeEnabled: true },
+  { id: 'prod-3', sku: 'FOOD-001', name: 'Milk 1L', description: 'Fresh milk', categoryId: 'cat-food', unitId: 'unit-ltr', costPrice: 80, sellingPrice: 150, stockQuantity: 25, lowStockThreshold: 5, expiryDate: '2026-04-02', barcode: '5000157101066', barcodeEnabled: true },
+  { id: 'prod-4', sku: 'FOOD-002', name: 'Bread', description: 'Whole wheat bread', categoryId: 'cat-food', unitId: 'unit-pcs', costPrice: 60, sellingPrice: 120, stockQuantity: 8, lowStockThreshold: 10, expiryDate: '2026-03-28', barcode: '5000275041222', barcodeEnabled: true },
+  { id: 'prod-5', sku: 'FROZEN-001', name: 'Ice Cream', description: 'Vanilla ice cream', categoryId: 'cat-frozen', unitId: 'unit-box', costPrice: 150, sellingPrice: 300, stockQuantity: 12, lowStockThreshold: 5, expiryDate: '2027-01-31', barcode: '0020000028420', barcodeEnabled: true },
+  { id: 'prod-6', sku: 'CLEAN-001', name: 'Dish Soap', description: '500ml dish cleaning liquid', categoryId: 'cat-cleaning', unitId: 'unit-ltr', costPrice: 120, sellingPrice: 200, stockQuantity: 35, lowStockThreshold: 8, barcode: '5901362011915', barcodeEnabled: true },
 ];
 
 function generateId(): string {
@@ -248,6 +270,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
 
   const [products, setProducts] = useState<Product[]>([]);
+  const [units, setUnits] = useState<Unit[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [orderItems, setOrderItems] = useState<OrderItem[]>([]);
@@ -788,6 +811,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             name: p.name,
             description: p.description,
             categoryId: p.category_id,
+            unitId: p.unit_id || 'unit-pcs',
             costPrice: p.cost_price,
             sellingPrice: p.selling_price,
             stockQuantity: p.stock_quantity,
@@ -1039,6 +1063,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       };
 
       setProducts(loadData('pos_products', SAMPLE_PRODUCTS));
+      setUnits(loadData('pos_units', SAMPLE_UNITS));
       setCategories(loadData('pos_categories', SAMPLE_CATEGORIES));
       setOrders(loadData('pos_orders', []));
       setOrderItems(loadData('pos_order_items', []));
@@ -1128,6 +1153,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         name: newProduct.name,
         description: newProduct.description,
         category_id: newProduct.categoryId,
+        unit_id: newProduct.unitId,
         cost_price: newProduct.costPrice,
         selling_price: newProduct.sellingPrice,
         stock_quantity: newProduct.stockQuantity,
@@ -1159,6 +1185,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       if (updates.name) dbUpdates.name = updates.name;
       if (updates.description) dbUpdates.description = updates.description;
       if (updates.categoryId) dbUpdates.category_id = updates.categoryId;
+      if (updates.unitId) dbUpdates.unit_id = updates.unitId;
       if (updates.costPrice !== undefined) dbUpdates.cost_price = updates.costPrice;
       if (updates.sellingPrice !== undefined) dbUpdates.selling_price = updates.sellingPrice;
       if (updates.stockQuantity !== undefined) dbUpdates.stock_quantity = updates.stockQuantity;
@@ -1204,6 +1231,58 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const getProductBySku = (sku: string) => {
     return products.find((p) => p.sku.toLowerCase() === sku.toLowerCase());
+  };
+
+  // Unit functions
+  const addUnit = async (unit: Omit<Unit, 'id'>) => {
+    const newUnit = { ...unit, id: generateId() };
+    setUnits((prev) => [...prev, newUnit]);
+
+    if (import.meta.env.VITE_SUPABASE_URL) {
+      const { error } = await supabase.from('units').insert(newUnit);
+      if (error) {
+        console.error('Error adding unit:', error);
+        toast.error('Failed to save unit');
+      }
+    } else {
+      localStorage.setItem('pos_units', JSON.stringify([...units, newUnit]));
+    }
+  };
+
+  const updateUnit = async (id: string, updates: Partial<Unit>) => {
+    setUnits((prev) =>
+      prev.map((u) => (u.id === id ? { ...u, ...updates } : u))
+    );
+
+    if (import.meta.env.VITE_SUPABASE_URL) {
+      const { error } = await supabase.from('units').update(updates).eq('id', id);
+      if (error) {
+        console.error('Error updating unit:', error);
+        toast.error('Failed to update unit');
+      }
+    } else {
+      const updatedUnits = units.map((u) => (u.id === id ? { ...u, ...updates } : u));
+      localStorage.setItem('pos_units', JSON.stringify(updatedUnits));
+    }
+  };
+
+  const deleteUnit = async (id: string) => {
+    setUnits((prev) => prev.filter((u) => u.id !== id));
+
+    if (import.meta.env.VITE_SUPABASE_URL) {
+      const { error } = await supabase.from('units').delete().eq('id', id);
+      if (error) {
+        console.error('Error deleting unit:', error);
+        toast.error('Failed to delete unit');
+      }
+    } else {
+      const remainingUnits = units.filter((u) => u.id !== id);
+      localStorage.setItem('pos_units', JSON.stringify(remainingUnits));
+    }
+  };
+
+  const getUnitById = (id: string) => {
+    return units.find((u) => u.id === id);
   };
 
   // Category functions
@@ -1473,6 +1552,109 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const getOrderItems = (orderId: string) => {
     return orderItems.filter((item) => item.orderId === orderId);
+  };
+
+  const getCustomerOrders = (customerId: string) => {
+    return orders.filter((order) => order.customerId === customerId);
+  };
+
+  const updateOrder = async (id: string, updates: Partial<Order>) => {
+    setOrders((prev) => prev.map((o) => (o.id === id ? { ...o, ...updates } : o)));
+
+    if (import.meta.env.VITE_SUPABASE_URL) {
+      const dbUpdates: any = {};
+      if (updates.paymentMethod !== undefined) dbUpdates.payment_method = updates.paymentMethod;
+      if (updates.status !== undefined) dbUpdates.status = updates.status;
+      if (updates.amountTendered !== undefined) dbUpdates.amount_tendered = updates.amountTendered;
+      if (updates.changeGiven !== undefined) dbUpdates.change_given = updates.changeGiven;
+      if (updates.clientName !== undefined) dbUpdates.client_name = updates.clientName;
+      if (updates.clientPhone !== undefined) dbUpdates.client_phone = updates.clientPhone;
+      if (updates.transferType !== undefined) dbUpdates.transfer_type = updates.transferType;
+      if (updates.transactionId !== undefined) dbUpdates.transaction_id = updates.transactionId;
+      if (updates.customerId !== undefined) dbUpdates.customer_id = updates.customerId;
+
+      const { error } = await supabase.from('orders').update(dbUpdates).eq('id', id);
+      if (error) {
+        console.error('Error updating order:', error);
+        toast.error('Failed to update bill in database');
+      }
+    } else {
+      const updatedOrders = orders.map((o) => (o.id === id ? { ...o, ...updates } : o));
+      localStorage.setItem('pos_orders', JSON.stringify(updatedOrders));
+    }
+  };
+
+  const cancelOrder = async (id: string) => {
+    const order = orders.find((o) => o.id === id);
+    if (!order || order.status === 'refunded') return;
+
+    const relatedItems = getOrderItems(id);
+
+    // Restore stock for all items in the cancelled order.
+    for (const item of relatedItems) {
+      const product = products.find((p) => p.id === item.productId);
+      if (!product) continue;
+      await updateProduct(item.productId, {
+        stockQuantity: product.stockQuantity + item.quantity,
+      });
+    }
+
+    await updateOrder(id, { status: 'refunded' });
+
+    if (order.paymentMethod === 'credit' && order.customerId) {
+      const customer = customers.find((c) => c.id === order.customerId);
+      if (!customer) return;
+
+      const reversalAmount = order.totalAmount;
+      const creditAfterReversal = Math.max(0, customer.totalCredit - reversalAmount);
+      const updatedBalance = creditAfterReversal - customer.totalPaid;
+
+      setCustomers((prev) =>
+        prev.map((c) =>
+          c.id === customer.id
+            ? {
+                ...c,
+                totalCredit: creditAfterReversal,
+                balance: updatedBalance,
+              }
+            : c
+        )
+      );
+
+      const reversalTransaction: CustomerTransaction = {
+        id: generateId(),
+        customerId: customer.id,
+        orderId: order.id,
+        type: 'payment',
+        amount: reversalAmount,
+        description: `Credit reversal - Cancelled order #${order.id.slice(-8).toUpperCase()}`,
+        createdAt: new Date().toISOString(),
+      };
+      setCustomerTransactions((prev) => [...prev, reversalTransaction]);
+
+      if (import.meta.env.VITE_SUPABASE_URL) {
+        const [transactionResult, customerResult] = await Promise.all([
+          supabase.from('customer_transactions').insert({
+            id: reversalTransaction.id,
+            customer_id: reversalTransaction.customerId,
+            order_id: reversalTransaction.orderId,
+            type: reversalTransaction.type,
+            amount: reversalTransaction.amount,
+            description: reversalTransaction.description,
+            created_at: reversalTransaction.createdAt,
+          }),
+          supabase
+            .from('customers')
+            .update({ total_credit: creditAfterReversal, balance: updatedBalance })
+            .eq('id', customer.id),
+        ]);
+
+        if (transactionResult.error || customerResult.error) {
+          console.error('Error reversing customer credit:', transactionResult.error || customerResult.error);
+          toast.error('Bill cancelled, but failed to sync customer credit reversal');
+        }
+      }
+    }
   };
 
   const updateSettings = async (updates: Partial<StoreSettings>) => {
@@ -2306,6 +2488,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         updateProduct,
         deleteProducts,
         getProductBySku,
+        units,
+        addUnit,
+        updateUnit,
+        deleteUnit,
+        getUnitById,
         categories,
         addCategory,
         updateCategory,
@@ -2345,7 +2532,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         orders,
         orderItems,
         createOrder,
+        updateOrder,
+        cancelOrder,
         getOrderItems,
+        getCustomerOrders,
         settings,
         updateSettings,
         cart,

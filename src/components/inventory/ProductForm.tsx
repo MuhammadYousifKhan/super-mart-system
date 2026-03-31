@@ -30,6 +30,7 @@ const productSchema = z.object({
   name: z.string().min(1, 'Name is required').max(100),
   description: z.string().max(500).optional(),
   categoryId: z.string().min(1, 'Category is required'),
+  unitId: z.string().min(1, 'Unit is required'),
   costPrice: z.coerce.number().min(0, 'Must be positive'),
   sellingPrice: z.coerce.number().min(0, 'Must be positive'),
   stockQuantity: z.coerce.number().int().min(0, 'Must be non-negative'),
@@ -47,7 +48,7 @@ interface ProductFormProps {
 }
 
 export function ProductForm({ product, onSuccess }: ProductFormProps) {
-  const { categories, products, addProduct, updateProduct } = useStore();
+  const { categories, units, products, addProduct, updateProduct } = useStore();
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const form = useForm<ProductFormData>({
@@ -58,6 +59,7 @@ export function ProductForm({ product, onSuccess }: ProductFormProps) {
           name: product.name,
           description: product.description,
           categoryId: product.categoryId,
+          unitId: product.unitId,
           costPrice: product.costPrice,
           sellingPrice: product.sellingPrice,
           stockQuantity: product.stockQuantity,
@@ -71,6 +73,7 @@ export function ProductForm({ product, onSuccess }: ProductFormProps) {
           name: '',
           description: '',
           categoryId: '',
+          unitId: '',
           costPrice: 0,
           sellingPrice: 0,
           stockQuantity: 0,
@@ -103,6 +106,7 @@ export function ProductForm({ product, onSuccess }: ProductFormProps) {
         name: data.name,
         description: data.description || '',
         categoryId: data.categoryId,
+        unitId: data.unitId,
         costPrice: data.costPrice,
         sellingPrice: data.sellingPrice,
         stockQuantity: data.stockQuantity,
@@ -138,6 +142,22 @@ export function ProductForm({ product, onSuccess }: ProductFormProps) {
 
           <FormField
             control={form.control}
+            name="name"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Product Name</FormLabel>
+                <FormControl>
+                  <Input {...field} placeholder="Product name" />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+          <FormField
+            control={form.control}
             name="categoryId"
             render={({ field }) => (
               <FormItem>
@@ -160,21 +180,32 @@ export function ProductForm({ product, onSuccess }: ProductFormProps) {
               </FormItem>
             )}
           />
-        </div>
 
-        <FormField
-          control={form.control}
-          name="name"
-          render={({ field }) => (
-            <FormItem>
-              <FormLabel>Product Name</FormLabel>
-              <FormControl>
-                <Input {...field} placeholder="Product name" />
-              </FormControl>
-              <FormMessage />
-            </FormItem>
-          )}
-        />
+          <FormField
+            control={form.control}
+            name="unitId"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Unit</FormLabel>
+                <Select onValueChange={field.onChange} defaultValue={field.value}>
+                  <FormControl>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select unit" />
+                    </SelectTrigger>
+                  </FormControl>
+                  <SelectContent>
+                    {units.map((unit) => (
+                      <SelectItem key={unit.id} value={unit.id}>
+                        {unit.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+        </div>
 
         <FormField
           control={form.control}

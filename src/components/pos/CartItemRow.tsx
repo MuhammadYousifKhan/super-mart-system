@@ -19,11 +19,12 @@ interface CartItemRowProps {
 }
 
 export function CartItemRow({ item }: CartItemRowProps) {
-  const { updateCartItem, removeFromCart, calculateItemDiscount } = useStore();
+  const { units, updateCartItem, removeFromCart, calculateItemDiscount } = useStore();
   const [discountOpen, setDiscountOpen] = useState(false);
   const [tempDiscount, setTempDiscount] = useState(item.discountAmount.toString());
   const [tempType, setTempType] = useState<'fixed' | 'percentage'>(item.discountType);
 
+  const unitName = units.find(u => u.id === item.product.unitId)?.name || '';
   const itemTotal = item.product.sellingPrice * item.quantity;
   const discount = calculateItemDiscount(item);
   const finalTotal = itemTotal - discount;
@@ -93,6 +94,7 @@ export function CartItemRow({ item }: CartItemRowProps) {
           >
             <Plus className="w-3 h-3" />
           </Button>
+          {unitName && <span className="text-xs text-muted-foreground ml-1">{unitName}</span>}
         </div>
 
         <div className="text-right">

@@ -48,18 +48,20 @@ import { Plus, Trash2, Search, ArrowUpDown, Package, FolderOpen, Edit, X } from 
 import { ProductForm } from '@/components/inventory/ProductForm';
 import { QuickAddModal } from '@/components/inventory/QuickAddModal';
 import { ReceiveSupplierStockModal } from '@/components/inventory/ReceiveSupplierStockModal';
+import { UnitsModal } from '@/components/inventory/UnitsModal';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import { formatPKR } from '@/pages/Analytics';
 
 export default function Inventory() {
-  const { products, categories, suppliers, deleteProducts, addCategory, updateCategory, deleteCategory } = useStore();
+  const { products, units, categories, suppliers, deleteProducts, addCategory, updateCategory, deleteCategory } = useStore();
   const [sorting, setSorting] = useState<SortingState>([]);
   const [globalFilter, setGlobalFilter] = useState('');
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
   const [isQuickAddOpen, setIsQuickAddOpen] = useState(false);
   const [isReceiveSupplierStockOpen, setIsReceiveSupplierStockOpen] = useState(false);
+  const [isUnitsModalOpen, setIsUnitsModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   
   // Category management state
@@ -70,6 +72,10 @@ export default function Inventory() {
 
   const getCategoryName = (categoryId: string) => {
     return categories.find((c) => c.id === categoryId)?.name || 'Unknown';
+  };
+
+  const getUnitName = (unitId: string) => {
+    return units.find((u) => u.id === unitId)?.name || 'Unknown';
   };
 
   const getStockStatus = (product: Product) => {
@@ -146,6 +152,13 @@ export default function Inventory() {
         header: 'Category',
         cell: ({ row }) => (
           <Badge variant="secondary">{getCategoryName(row.getValue('categoryId'))}</Badge>
+        ),
+      },
+      {
+        accessorKey: 'unitId',
+        header: 'Unit',
+        cell: ({ row }) => (
+          <Badge variant="outline">{getUnitName(row.getValue('unitId'))}</Badge>
         ),
       },
       {
@@ -360,7 +373,14 @@ export default function Inventory() {
             <Package className="w-4 h-4 mr-2" />
             Receive Supplier Stock
           </Button>
-          <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
+           <Button
+             variant="outline"
+             onClick={() => setIsUnitsModalOpen(true)}
+           >
+             <FolderOpen className="w-4 h-4 mr-2" />
+             Manage Units
+           </Button>
+           <Dialog open={isAddDialogOpen} onOpenChange={setIsAddDialogOpen}>
             <DialogTrigger asChild>
               <Button>
                 <Plus className="w-4 h-4 mr-2" />
@@ -482,6 +502,12 @@ export default function Inventory() {
         open={isReceiveSupplierStockOpen}
         onOpenChange={setIsReceiveSupplierStockOpen}
       />
+
+       {/* Units Management Modal */}
+       <UnitsModal
+         open={isUnitsModalOpen}
+         onOpenChange={setIsUnitsModalOpen}
+       />
 
       {/* Category Management Dialog */}
       <Dialog open={isCategoryDialogOpen} onOpenChange={setIsCategoryDialogOpen}>

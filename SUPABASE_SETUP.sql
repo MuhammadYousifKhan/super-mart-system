@@ -8,6 +8,13 @@ create table public.categories (
   description text
 );
 
+-- Units Table
+create table public.units (
+  id text primary key,
+  name text not null unique,
+  description text
+);
+
 -- Products Table
 create table public.products (
   id text primary key,
@@ -15,6 +22,7 @@ create table public.products (
   name text not null,
   description text,
   category_id text references public.categories(id),
+  unit_id text references public.units(id),
   cost_price numeric not null default 0,
   selling_price numeric not null default 0,
   stock_quantity integer not null default 0,
