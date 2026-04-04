@@ -1,5 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { User, UserRole, UserCredentials } from '@/types/pos';
+import { supabase } from '@/lib/supabase';
+import { toast } from 'sonner';
 
 interface AuthContextType {
   user: User | null;
@@ -15,164 +17,153 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-// Default users for the system
-const DEFAULT_USERS: UserCredentials[] = [
-  {
-    email: 'admin@pos.com',
-    password: 'admin123',
-    fullName: 'System Administrator',
-    role: 'admin',
-  },
-  {
-    email: 'cashier@pos.com',
-    password: 'cashier123',
-    fullName: 'John Cashier',
-    role: 'cashier',
-  },
-];
-
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [users, setUsers] = useState<UserCredentials[]>(DEFAULT_USERS);
+  const [dbUsers, setDbUsers] = useState<UserCredentials[]>([]);
 
   useEffect(() => {
-    // Load users from localStorage
-    const savedUsers = localStorage.getItem('pos_users');
-    if (savedUsers) {
+    // Check active sessions and sets the user
+    const checkSession = async () => {
+      setIsLoading(true);
       try {
-        const parsed: UserCredentials[] = JSON.parse(savedUsers);
+        const { data: { session }, error } = await supabase.auth.getSession();
+        
+        if (error) {
+          console.error("Auth session error:", error);
+          setIsLoading(false);
+          return;
+        }
 
-        // Repair malformed emails (e.g., user accidentally removed @domain)
-        const repaired = parsed.map((u) => {
-          if (!u.email.includes('@')) {
-            return { ...u, email: `${u.email}@pos.com` };
+        if (session?.user) {
+          await loadUserProfile(session.user.id, session.user.email!);
+          if (session.user.role === 'admin') {
+            await fetchAllUsers();
           }
-          return u;
-        });
-
-        // Ensure at least one admin exists; if none, add default admin
-        const hasAdmin = repaired.some((u) => u.role === 'admin');
-        const finalUsers = hasAdmin ? repaired : [{
-          email: 'admin@pos.com',
-          password: 'admin123',
-          fullName: 'System Administrator',
-          role: 'admin',
-        }, ...repaired];
-
-        setUsers(finalUsers);
-      } catch {
-        localStorage.setItem('pos_users', JSON.stringify(DEFAULT_USERS));
+        } else {
+          setIsLoading(false);
+        }
+      } catch (err) {
+        console.error("Failed to check session. Check network or Supabase URL:", err);
+        setIsLoading(false);
       }
-    } else {
-      localStorage.setItem('pos_users', JSON.stringify(DEFAULT_USERS));
-    }
+    };
+    
+    checkSession();
 
-    // Load current user
-    const savedUser = localStorage.getItem('pos_current_user');
-    if (savedUser) {
-      try {
-        setUser(JSON.parse(savedUser));
-      } catch {
-        localStorage.removeItem('pos_current_user');
+    // Listen for auth changes (Login, Logout)
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      if (session?.user) {
+        await loadUserProfile(session.user.id, session.user.email!);
+      } else {
+        setUser(null);
       }
-    }
-    setIsLoading(false);
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
 
-  // Save users to localStorage when changed
-  useEffect(() => {
-    localStorage.setItem('pos_users', JSON.stringify(users));
-  }, [users]);
+  const loadUserProfile = async (userId: string, email: string) => {
+    try {
+      // Get user role from our new table
+      const { data: roleData, error } = await supabase
+        .from('user_roles')
+        .select('role, full_name')
+        .eq('user_id', userId)
+        .single();
+
+      if (error) {
+        throw error;
+      }
+
+      if (roleData) {
+        setUser({
+          id: userId,
+          email: email,
+          fullName: roleData.full_name || email.split('@')[0],
+          role: roleData.role as UserRole,
+        });
+        if (roleData.role === 'admin') fetchAllUsers();
+      } else {
+        // Fallback if role missing
+        setUser({
+          id: userId,
+          email: email,
+          fullName: email.split('@')[0],
+          role: 'cashier',
+        });
+      }
+    } catch (err) {
+      console.error("Failed to load user profile:", err);
+      // Fallback if request fails (e.g., DNS error after successfully caching session)
+      setUser({
+        id: userId,
+        email: email,
+        fullName: email.split('@')[0],
+        role: 'cashier',
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const fetchAllUsers = async () => {
+    try {
+      const { data, error } = await supabase.from('user_roles').select('email, role, full_name');
+      if (data) {
+        setDbUsers(data.map(d => ({
+          email: d.email,
+          password: '***', // We do not return actual passwords from Supabase
+          fullName: d.full_name,
+          role: d.role as UserRole
+        })));
+      }
+    } catch (err) {
+      console.error("Failed to fetch all users:", err);
+    }
+  };
 
   const login = async (email: string, password: string): Promise<boolean> => {
-    const foundUser = users.find(
-      (u) => u.email.toLowerCase() === email.toLowerCase() && u.password === password
-    );
-    if (foundUser) {
-      const loggedInUser: User = {
-        id: `user-${foundUser.role}-${Date.now()}`,
-        email: foundUser.email,
-        fullName: foundUser.fullName,
-        role: foundUser.role,
-      };
-      setUser(loggedInUser);
-      localStorage.setItem('pos_current_user', JSON.stringify(loggedInUser));
-      return true;
+    setIsLoading(true);
+    const { error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+    
+    setIsLoading(false);
+    if (error) {
+      toast.error(error.message);
+      return false;
     }
+    return true;
+  };
+
+  const logout = async () => {
+    await supabase.auth.signOut();
+    setUser(null);
+  };
+
+  // --------------------------------------------------------
+  // NOTE: User Management (Create/Update/Delete) via UI requires a Supabase Backend.
+  // We mock the local state updates so the UI doesn't crash, but tell the user to use 
+  // the Supabase Dashboard for true management.
+  // --------------------------------------------------------
+
+  const updateCredentials = (oldEmail: string, newCredentials: Partial<UserCredentials>): boolean => {
+    toast.error("Multi-user setup requires password resets to be handled via Supabase Dashboard or authenticated emails.");
     return false;
   };
 
-  const logout = () => {
-    setUser(null);
-    localStorage.removeItem('pos_current_user');
-  };
+  const getUsers = () => dbUsers;
 
-  const updateCredentials = (
-    oldEmail: string,
-    newCredentials: Partial<UserCredentials>
-  ): boolean => {
-    const userIndex = users.findIndex(
-      (u) => u.email.toLowerCase() === oldEmail.toLowerCase()
-    );
-    if (userIndex === -1) return false;
-
-    const updatedUsers = [...users];
-    updatedUsers[userIndex] = { ...updatedUsers[userIndex], ...newCredentials };
-    setUsers(updatedUsers);
-
-    // Update current user if it's the same user
-    if (user && user.email.toLowerCase() === oldEmail.toLowerCase()) {
-      const updatedCurrentUser: User = {
-        ...user,
-        email: newCredentials.email || user.email,
-        fullName: newCredentials.fullName || user.fullName,
-      };
-      setUser(updatedCurrentUser);
-      localStorage.setItem('pos_current_user', JSON.stringify(updatedCurrentUser));
-    }
-
-    return true;
-  };
-
-  const getUsers = () => users;
-
-  const createUser = (
-    credentials: Omit<UserCredentials, 'role'> & { role?: UserRole }
-  ): boolean => {
-    // Check if email already exists
-    const existingUser = users.find(
-      (u) => u.email.toLowerCase() === credentials.email.toLowerCase()
-    );
-    if (existingUser) return false;
-
-    const newUser: UserCredentials = {
-      email: credentials.email,
-      password: credentials.password,
-      fullName: credentials.fullName,
-      role: credentials.role || 'cashier',
-    };
-    setUsers([...users, newUser]);
-    return true;
+  const createUser = (credentials: Omit<UserCredentials, 'role'> & { role?: UserRole }): boolean => {
+    toast.info("With real Authentication enabled, you must create edge workers or use the Supabase Dashboard to safely provision new user accounts without losing your current admin session.");
+    return false;
   };
 
   const deleteUser = (email: string): boolean => {
-    // Prevent deleting the current user or the last admin
-    if (user?.email.toLowerCase() === email.toLowerCase()) return false;
-    
-    const userToDelete = users.find(
-      (u) => u.email.toLowerCase() === email.toLowerCase()
-    );
-    if (!userToDelete) return false;
-
-    // Prevent deleting the last admin
-    if (userToDelete.role === 'admin') {
-      const adminCount = users.filter((u) => u.role === 'admin').length;
-      if (adminCount <= 1) return false;
-    }
-
-    setUsers(users.filter((u) => u.email.toLowerCase() !== email.toLowerCase()));
-    return true;
+    toast.error("User deletion must be done from Supabase Auth Dashboard in production.");
+    return false;
   };
 
   return (

@@ -254,6 +254,32 @@ create policy "Allow public access to orders" on public.orders for all using (tr
 create policy "Allow public access to order_items" on public.order_items for all using (true);
 create policy "Allow public access to store_settings" on public.store_settings for all using (true);
 
+-- User Roles Table (For real authentication)
+create table if not exists public.user_roles (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references auth.users(id) on delete cascade not null,
+  email text not null,
+  role text not null check (role in ('admin', 'cashier')),
+  full_name text,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  unique(user_id),
+  unique(email)
+);
+
+alter table public.user_roles enable row level security;
+-- Admins can read/write all roles, users can read their own
+create policy "Users can read their own role" on public.user_roles for select using (auth.uid() = user_id);
+create policy "Admins can read all roles" on public.user_roles for select using (
+  (select role from public.user_roles where user_id = auth.uid()) = 'admin'
+);
+
+-- Secure policies for production (Optional: replace the public policies above with these)
+-- For example:
+-- create policy "Allow authenticated users to view products" on public.products for select using (auth.role() = 'authenticated');
+-- create policy "Allow admins to edit products" on public.products for all using (
+--   (select role from public.user_roles where user_id = auth.uid()) = 'admin'
+-- );
+
 -- Create indexes for better query performance
 create index idx_products_category on public.products(category_id);
 create index idx_orders_created_at on public.orders(created_at);
