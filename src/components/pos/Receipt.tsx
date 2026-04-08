@@ -1,4 +1,4 @@
-import { useStore } from '@/contexts/StoreContext';
+import { useStore } from '@/contexts/useStore';
 import { Order } from '@/types/pos';
 import { format } from 'date-fns';
 import { formatPKR } from '@/pages/Analytics';
@@ -6,12 +6,16 @@ import { Button } from '@/components/ui/button';
 import { Printer, Share2 } from 'lucide-react';
 
 interface ReceiptProps {
-  order: Order;
+  order?: Order;
   showActions?: boolean;
 }
 
 export function Receipt({ order, showActions = false }: ReceiptProps) {
   const { settings, getOrderItems } = useStore();
+  if (!order) {
+    return null;
+  }
+
   const items = getOrderItems(order.id);
 
   const generateReceiptText = () => {

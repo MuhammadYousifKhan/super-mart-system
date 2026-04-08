@@ -1,6 +1,6 @@
 import { NavLink, useLocation } from 'react-router-dom';
-import { useAuth } from '@/contexts/AuthContext';
-import { useStore } from '@/contexts/StoreContext';
+import { useAuth } from '@/contexts/useAuth';
+import { useStore } from '@/contexts/useStore';
 import { cn } from '@/lib/utils';
 import { useState, useEffect } from 'react';
 import {

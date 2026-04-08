@@ -1,4 +1,4 @@
-import { useStore } from '@/contexts/StoreContext';
+import { useStore } from '@/contexts/useStore';
 import { CartItem } from '@/types/pos';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';

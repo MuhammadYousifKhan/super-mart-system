@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { useStore } from '@/contexts/StoreContext';
+import { useStore } from '@/contexts/useStore';
 import { Supplier, ScheduleFrequency } from '@/types/pos';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';

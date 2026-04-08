@@ -1,4 +1,4 @@
-import { useStore } from '@/contexts/StoreContext';
+import { useStore } from '@/contexts/useStore';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import {

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useStore } from '@/contexts/StoreContext';
+import { useStore } from '@/contexts/useStore';
 import { PaymentMethod, TransferType, Order } from '@/types/pos';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';

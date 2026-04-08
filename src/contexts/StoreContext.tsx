@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useRef, useCallback, ReactNode } from 'react';
+import React, { useState, useEffect, useRef, useCallback, ReactNode } from 'react';
 import {
   Product,
   Category,
@@ -19,7 +19,8 @@ import {
   SupplierPaymentSchedule,
   ScheduleFrequency,
 } from '@/types/pos';
-import { useAuth } from './AuthContext';
+import { useAuth } from './useAuth';
+import { StoreContext } from './StoreContextValue';
 import { supabase } from '@/lib/supabase';
 import { toast } from 'sonner';
 
@@ -36,7 +37,7 @@ interface CreateOrderOptions {
   customerId?: string;
 }
 
-interface StoreContextType {
+export interface StoreContextType {
   // Products
   products: Product[];
   addProduct: (product: Omit<Product, 'id'>) => void;
@@ -179,8 +180,6 @@ interface PendingSyncOperation {
   retryCount: number;
   lastError?: string;
 }
-
-const StoreContext = createContext<StoreContextType | undefined>(undefined);
 
 const DEFAULT_SETTINGS: StoreSettings = {
   storeName: 'My Store',
@@ -1030,11 +1029,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         }
 
       } catch (error) {
-        const message = error instanceof Error ? error.message.toLowerCase() : '';
+        const rawMessage =
+          error instanceof Error
+            ? error.message
+            : typeof error === 'string'
+              ? error
+              : JSON.stringify(error);
+        const message = rawMessage.toLowerCase();
         const isNetworkFallback =
           message.includes('failed to fetch') ||
           message.includes('networkerror') ||
-          message.includes('err_name_not_resolved');
+          message.includes('err_name_not_resolved') ||
+          message.includes('name_not_resolved');
 
         if (isNetworkFallback) {
           console.warn('Supabase unreachable, using local storage fallback.');
@@ -2562,10 +2568,3 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   );
 }
 
-export function useStore() {
-  const context = useContext(StoreContext);
-  if (!context) {
-    throw new Error('useStore must be used within StoreProvider');
-  }
-  return context;
-}

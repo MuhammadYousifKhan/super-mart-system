@@ -10,7 +10,7 @@ import {
   SortingState,
   RowSelectionState,
 } from '@tanstack/react-table';
-import { useStore } from '@/contexts/StoreContext';
+import { useStore } from '@/contexts/useStore';
 import { Product, Category } from '@/types/pos';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';

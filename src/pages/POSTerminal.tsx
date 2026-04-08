@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { useStore } from '@/contexts/StoreContext';
+import { useStore } from '@/contexts/useStore';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -22,6 +22,7 @@ import {
   Search,
   ShoppingCart,
   History,
+  Receipt as ReceiptIcon,
   XCircle,
   Pencil,
 } from 'lucide-react';
@@ -323,7 +324,7 @@ export default function POSTerminal() {
         <DialogContent className="max-w-4xl max-h-[85vh] flex flex-col">
           <DialogHeader>
             <DialogTitle className="text-2xl font-bold flex items-center gap-2">
-              <Receipt className="w-6 h-6 text-primary" />
+              <ReceiptIcon className="w-6 h-6 text-primary" />
               Manage Recent Bills
             </DialogTitle>
           </DialogHeader>
