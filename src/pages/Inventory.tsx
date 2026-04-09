@@ -205,7 +205,7 @@ export default function Inventory() {
         header: 'Expiry Date',
         cell: ({ row }) => {
           const expiryDate = row.getValue('expiryDate') as string | undefined;
-          if (!expiryDate) return <span className="text-gray-400">No expiry</span>;
+          if (!expiryDate) return <span className="text-muted-foreground italic">No expiry</span>;
           const status = getExpiryStatus(expiryDate);
           const displayDate = new Date(expiryDate).toLocaleDateString('en-US', {
             month: 'short',
@@ -234,7 +234,7 @@ export default function Inventory() {
         header: 'Barcode',
         cell: ({ row }) => {
           const product = row.original;
-          if (!product.barcode) return <span className="text-gray-400">-</span>;
+          if (!product.barcode) return <span className="text-muted-foreground">-</span>;
           return (
             <div className="flex items-center gap-2">
               <code className="text-xs bg-muted px-2 py-1 rounded">{product.barcode}</code>

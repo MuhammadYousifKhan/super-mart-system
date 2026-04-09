@@ -77,6 +77,7 @@ export default function Customers() {
     getCustomerReminders,
     getDueCustomerReminders,
     markReminderTriggered,
+    settings,
   } = useStore();
 
   const [searchTerm, setSearchTerm] = useState('');
@@ -187,7 +188,8 @@ export default function Customers() {
       return;
     }
 
-    const cardFee = paymentMethod === 'card' ? (amount * 2) / 100 : 0;
+    const cardFeePercent = settings.cardFeePercent;
+    const cardFee = paymentMethod === 'card' ? (amount * cardFeePercent) / 100 : 0;
     const totalCharged = amount + cardFee;
 
     addCustomerPayment(
@@ -429,7 +431,7 @@ export default function Customers() {
         <CardContent>
           {/* Search */}
           <div className="mb-4 relative">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               placeholder="Search by name, phone, or NIC..."
               value={searchTerm}
@@ -444,18 +446,18 @@ export default function Customers() {
               <TableHeader>
                 <TableRow className="border-border/40 hover:bg-muted/30">
                   <TableHead className="min-w-[180px]">Customer</TableHead>
-                  <TableHead className="text-gray-300 min-w-[120px]">Phone</TableHead>
-                  <TableHead className="text-gray-300 min-w-[150px]">Address</TableHead>
-                  <TableHead className="text-gray-300 text-right min-w-[100px]">Total Credit</TableHead>
-                  <TableHead className="text-gray-300 text-right min-w-[100px]">Paid</TableHead>
-                  <TableHead className="text-gray-300 text-right min-w-[100px]">Balance</TableHead>
-                  <TableHead className="text-gray-300 text-right min-w-[140px]">Actions</TableHead>
+                  <TableHead className="text-muted-foreground min-w-[120px]">Phone</TableHead>
+                  <TableHead className="text-muted-foreground min-w-[150px]">Address</TableHead>
+                  <TableHead className="text-muted-foreground text-right min-w-[100px]">Total Credit</TableHead>
+                  <TableHead className="text-muted-foreground text-right min-w-[100px]">Paid</TableHead>
+                  <TableHead className="text-muted-foreground text-right min-w-[100px]">Balance</TableHead>
+                  <TableHead className="text-muted-foreground text-right min-w-[140px]">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {displayedCustomers.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={7} className="text-center text-gray-400 py-8">
+                    <TableCell colSpan={7} className="text-center text-muted-foreground py-8">
                       {searchTerm
                         ? 'No customers found matching your search'
                         : activeTab === 'credit' 
@@ -481,13 +483,13 @@ export default function Customers() {
                           <div>
                             <p className="font-medium text-foreground">{customer.name}</p>
                             {customer.nic && (
-                              <p className="text-xs text-gray-400">NIC: {customer.nic}</p>
+                              <p className="text-xs text-muted-foreground">NIC: {customer.nic}</p>
                             )}
                           </div>
                         </div>
                       </TableCell>
-                      <TableCell className="text-gray-300">{customer.phone}</TableCell>
-                      <TableCell className="text-gray-300 max-w-[200px] truncate">
+                      <TableCell className="text-muted-foreground">{customer.phone}</TableCell>
+                      <TableCell className="text-muted-foreground max-w-[200px] truncate">
                         {customer.address}
                       </TableCell>
                       <TableCell className="text-yellow-400 font-medium text-right">
@@ -542,7 +544,7 @@ export default function Customers() {
                             onClick={() => openEditModal(customer)}
                             title="Edit Customer"
                           >
-                            <Edit className="h-4 w-4 text-gray-400" />
+                            <Edit className="h-4 w-4 text-muted-foreground" />
                           </Button>
                           <Button
                             variant="ghost"
@@ -568,59 +570,59 @@ export default function Customers() {
 
       {/* Add Customer Modal */}
       <Dialog open={showAddModal} onOpenChange={setShowAddModal}>
-        <DialogContent className="bg-gray-900 border-white/10">
+        <DialogContent className="bg-card border-border">
           <DialogHeader>
-            <DialogTitle className="text-white">Add New Customer</DialogTitle>
+            <DialogTitle className="text-foreground">Add New Customer</DialogTitle>
             <DialogDescription>
               Add a new customer to your Digi Khata. Required fields are marked with *.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
-              <Label className="text-gray-200">Name *</Label>
+              <Label className="text-foreground">Name *</Label>
               <div className="relative">
-                <User className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                <User className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   value={formData.name}
                   onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                   placeholder="Customer name"
-                  className="pl-10 bg-white/5 border-white/10"
+                  className="pl-10 bg-muted/20 border-border/50"
                 />
               </div>
             </div>
             <div className="space-y-2">
-              <Label className="text-gray-200">Phone *</Label>
+              <Label className="text-foreground">Phone *</Label>
               <div className="relative">
-                <Phone className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                <Phone className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   value={formData.phone}
                   onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
                   placeholder="03XX-XXXXXXX"
-                  className="pl-10 bg-white/5 border-white/10"
+                  className="pl-10 bg-muted/20 border-border/50"
                 />
               </div>
             </div>
             <div className="space-y-2">
-              <Label className="text-gray-200">Address *</Label>
+              <Label className="text-foreground">Address *</Label>
               <div className="relative">
-                <MapPin className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
+                <MapPin className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
                 <Input
                   value={formData.address}
                   onChange={(e) => setFormData({ ...formData, address: e.target.value })}
                   placeholder="Full address"
-                  className="pl-10 bg-white/5 border-white/10"
+                  className="pl-10 bg-muted/20 border-border/50"
                 />
               </div>
             </div>
             <div className="space-y-2">
-              <Label className="text-gray-200">NIC (Optional)</Label>
+              <Label className="text-foreground">NIC (Optional)</Label>
               <div className="relative">
-                <CreditCard className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                <CreditCard className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   value={formData.nic}
                   onChange={(e) => setFormData({ ...formData, nic: e.target.value })}
                   placeholder="XXXXX-XXXXXXX-X"
-                  className="pl-10 bg-white/5 border-white/10"
+                  className="pl-10 bg-muted/20 border-border/50"
                 />
               </div>
             </div>
@@ -649,9 +651,9 @@ export default function Customers() {
           </DialogHeader>
           <div className="space-y-4 py-4">
             <div className="space-y-2">
-              <Label className="text-gray-200">Name *</Label>
+              <Label className="text-foreground">Name *</Label>
               <div className="relative">
-                <User className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                <User className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   value={formData.name}
                   onChange={(e) => setFormData({ ...formData, name: e.target.value })}
@@ -661,9 +663,9 @@ export default function Customers() {
               </div>
             </div>
             <div className="space-y-2">
-              <Label className="text-gray-200">Phone *</Label>
+              <Label className="text-foreground">Phone *</Label>
               <div className="relative">
-                <Phone className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                <Phone className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   value={formData.phone}
                   onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
@@ -673,9 +675,9 @@ export default function Customers() {
               </div>
             </div>
             <div className="space-y-2">
-              <Label className="text-gray-200">Address *</Label>
+              <Label className="text-foreground">Address *</Label>
               <div className="relative">
-                <MapPin className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
+                <MapPin className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
                 <Input
                   value={formData.address}
                   onChange={(e) => setFormData({ ...formData, address: e.target.value })}
@@ -685,9 +687,9 @@ export default function Customers() {
               </div>
             </div>
             <div className="space-y-2">
-              <Label className="text-gray-200">NIC (Optional)</Label>
+              <Label className="text-foreground">NIC (Optional)</Label>
               <div className="relative">
-                <CreditCard className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                <CreditCard className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   value={formData.nic}
                   onChange={(e) => setFormData({ ...formData, nic: e.target.value })}
@@ -773,11 +775,11 @@ export default function Customers() {
             )}
 
             {/* Transaction List */}
-            <ScrollArea className="h-[300px] rounded-lg border border-white/10">
+            <ScrollArea className="h-[300px] rounded-lg border border-border/50">
               {selectedCustomer && (
                 <div className="p-4 space-y-3">
                   {getCustomerTransactions(selectedCustomer.id).length === 0 ? (
-                    <div className="text-center text-gray-400 py-8">
+                    <div className="text-center text-muted-foreground py-8">
                       No transactions yet
                     </div>
                   ) : (
@@ -790,7 +792,7 @@ export default function Customers() {
                       .map((transaction) => (
                         <div
                           key={transaction.id}
-                          className="flex items-center justify-between p-3 rounded-lg bg-white/5 border border-white/10"
+                          className="flex items-center justify-between p-3 rounded-lg bg-muted/20 border border-border/50"
                         >
                           <div className="flex items-center gap-3">
                             <div
@@ -814,7 +816,7 @@ export default function Customers() {
                                 {formatDate(transaction.createdAt)}
                               </p>
                               {transaction.type === 'payment' && transaction.paymentMethod && (
-                                <p className="text-xs text-gray-400 mt-1">
+                                <p className="text-xs text-muted-foreground mt-1">
                                   Method: {transaction.paymentMethod.toUpperCase()}
                                   {transaction.paymentMethod === 'card' && transaction.cardFeeAmount
                                     ? ` | Card fee: Rs. ${transaction.cardFeeAmount.toLocaleString()}`
@@ -899,17 +901,17 @@ export default function Customers() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="cash">Cash</SelectItem>
-                  <SelectItem value="card">Card (2% charge)</SelectItem>
+                  <SelectItem value="card">Card ({settings.cardFeePercent}% charge)</SelectItem>
                 </SelectContent>
               </Select>
             </div>
             {paymentMethod === 'card' && (parseFloat(paymentAmount) || 0) > 0 && (
               <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-sm">
                 <p className="text-amber-600 font-medium">
-                  Card charge (2%): Rs. {(((parseFloat(paymentAmount) || 0) * 2) / 100).toLocaleString()}
+                  Card charge ({settings.cardFeePercent}%): Rs. {(((parseFloat(paymentAmount) || 0) * settings.cardFeePercent) / 100).toLocaleString()}
                 </p>
                 <p className="text-amber-700 mt-1">
-                  Total charged to customer: Rs. {((parseFloat(paymentAmount) || 0) * 1.02).toLocaleString()}
+                  Total charged to customer: Rs. {((parseFloat(paymentAmount) || 0) * (1 + settings.cardFeePercent / 100)).toLocaleString()}
                 </p>
               </div>
             )}
@@ -944,7 +946,7 @@ export default function Customers() {
 
       {/* Reminder Modal */}
       <Dialog open={showReminderModal} onOpenChange={setShowReminderModal}>
-        <DialogContent className="bg-gray-900 border-white/10">
+        <DialogContent className="bg-card border-border">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Bell className="h-5 w-5" />

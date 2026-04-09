@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useStore } from '@/contexts/useStore';
+import { cn } from '@/lib/utils';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -25,10 +26,13 @@ import {
   Receipt as ReceiptIcon,
   XCircle,
   Pencil,
+  Calculator,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Order } from '@/types/pos';
 import { format } from 'date-fns';
+import { POSNumpad } from '@/components/pos/POSNumpad';
+
 
 export default function POSTerminal() {
   const {
@@ -42,6 +46,9 @@ export default function POSTerminal() {
     calculateTotal,
     updateOrder,
     cancelOrder,
+    holdCart,
+    updateCartItem,
+    removeFromCart,
   } = useStore();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -55,6 +62,7 @@ export default function POSTerminal() {
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [editClientName, setEditClientName] = useState('');
   const [editClientPhone, setEditClientPhone] = useState('');
+  const [isNumpadVisible, setIsNumpadVisible] = useState(true);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   const recentOrders = orders.slice(0, 50);
@@ -156,6 +164,14 @@ export default function POSTerminal() {
   // Hotkeys
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // If receipt is showing, Enter starts a new sale
+      if (showReceipt && e.key === 'Enter') {
+        e.preventDefault();
+        setShowReceipt(false);
+        setTimeout(() => searchInputRef.current?.focus(), 0);
+        return;
+      }
+
       if (e.key === 'F2') {
         e.preventDefault();
         searchInputRef.current?.focus();
@@ -168,23 +184,58 @@ export default function POSTerminal() {
           setIsCheckoutOpen(false);
         } else if (isCartOpen) {
           setIsCartOpen(false);
+        } else if (showReceipt) {
+          setShowReceipt(false);
+          setTimeout(() => searchInputRef.current?.focus(), 0);
         } else {
           clearCart();
           toast.info('Cart cleared');
+        }
+      } else if (e.key === 'F9') {
+        e.preventDefault();
+        if (cart.length > 0) {
+          holdCart(`Bill held at ${new Date().toLocaleTimeString()}`);
+          toast.success('Bill placed on hold');
+        }
+      } else if (e.key === '+' || e.key === 'Add') {
+        // Adjust last item quantity (+)
+        if (cart.length > 0) {
+          e.preventDefault();
+          const lastItem = cart[cart.length - 1];
+          const newQty = lastItem.quantity + 1;
+          
+          if (lastItem.product.stockQuantity < newQty && !settings.allowNegativeStock) {
+            toast.error('Cannot add more: Out of stock');
+          } else {
+            updateCartItem(lastItem.product.id, { quantity: newQty });
+          }
+        }
+      } else if (e.key === '-' || e.key === 'Subtract') {
+        // Adjust last item quantity (-)
+        if (cart.length > 0) {
+          e.preventDefault();
+          const lastItem = cart[cart.length - 1];
+          if (lastItem.quantity > 1) {
+            updateCartItem(lastItem.product.id, { quantity: lastItem.quantity - 1 });
+          } else {
+            removeFromCart(lastItem.product.id);
+            toast.info('Item removed from cart');
+          }
         }
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [cart.length, clearCart, isCheckoutOpen, isCartOpen]);
+  }, [cart.length, clearCart, isCheckoutOpen, isCartOpen, showReceipt]);
 
   useEffect(() => {
     searchInputRef.current?.focus();
   }, []);
 
   return (
-    <div className="flex flex-col h-full relative">
+    <div className="flex h-full relative overflow-hidden">
+      <div className="flex-1 flex flex-col h-full relative">
       {/* Header with Search */}
       <div className="p-6 border-b border-border/50 bg-background/40 backdrop-blur-md sticky top-0 z-10">
         <div className="relative max-w-3xl mx-auto">
@@ -199,22 +250,36 @@ export default function POSTerminal() {
             className="pl-12 h-14 text-lg barcode-input bg-muted/50 border-border/50 focus:border-primary/50 focus:ring-primary/20 rounded-xl shadow-inner transition-all"
           />
         </div>
-        <div className="flex justify-center gap-6 mt-3 text-xs font-medium text-muted-foreground/80">
-          <span className="flex items-center gap-1.5"><span className="hotkey bg-primary/10 text-primary border-primary/20">F2</span> Focus search</span>
-          <span className="flex items-center gap-1.5"><span className="hotkey bg-primary/10 text-primary border-primary/20">F12</span> Checkout</span>
-          <span className="flex items-center gap-1.5"><span className="hotkey bg-primary/10 text-primary border-primary/20">Esc</span> Clear/Close</span>
+        <div className="flex justify-center flex-wrap gap-4 sm:gap-6 mt-3 text-xs font-medium text-muted-foreground/80">
+          <span className="flex items-center gap-1.5"><span className="hotkey bg-primary/10 text-primary border-primary/20">F2</span> Search</span>
+          <span className="flex items-center gap-1.5"><span className="hotkey bg-primary/10 text-primary border-primary/20">F12</span> Pay</span>
+          <span className="flex items-center gap-1.5"><span className="hotkey bg-primary/10 text-primary border-primary/20">F9</span> Hold</span>
+          <span className="flex items-center gap-1.5"><span className="hotkey bg-primary/10 text-primary border-primary/20">Esc</span> Exit</span>
+          <span className="flex items-center gap-1.5"><span className="hotkey bg-primary/10 text-primary border-primary/20">+/-</span> Qty</span>
         </div>
         
         {/* Bill Management */}
-        <div className="flex justify-end mt-4 px-2">
+        <div className="flex justify-between items-center mt-4 px-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            className={cn(
+              "text-xs gap-2",
+              isNumpadVisible ? "text-primary bg-primary/10" : "text-muted-foreground"
+            )}
+            onClick={() => setIsNumpadVisible(!isNumpadVisible)}
+          >
+            <Calculator className="w-4 h-4" />
+            {isNumpadVisible ? "Hide Numpad" : "Show Numpad"}
+          </Button>
           <Button 
             variant="outline" 
             size="sm" 
             className="border-primary/20 text-primary hover:bg-primary/10"
             onClick={() => setIsManageBillsDialogOpen(true)}
           >
-            <Receipt className="w-4 h-4 mr-2" />
-            Manage Recent Bills
+            <ReceiptIcon className="w-4 h-4 mr-2" />
+            Manage Bills
           </Button>
         </div>
       </div>
@@ -260,9 +325,19 @@ export default function POSTerminal() {
                   )}
                 </div>
                 
-                <p className="relative z-10 font-medium text-sm line-clamp-2 flex-1 text-foreground/90 group-hover:text-primary transition-colors">
-                  {product.name}
-                </p>
+                <div className="relative z-10 mb-1 flex items-center justify-between">
+                  <p className="font-medium text-sm line-clamp-1 flex-1 text-foreground/90 group-hover:text-primary transition-colors">
+                    {product.name}
+                  </p>
+                  <span className={cn(
+                    "text-[10px] font-bold px-1.5 py-0.5 rounded-md",
+                    isOutOfStock ? "bg-destructive/20 text-destructive border border-destructive/30" :
+                    isLowStock ? "bg-amber-500/20 text-amber-500 border border-amber-500/30" :
+                    "bg-success/20 text-success border border-success/30"
+                  )}>
+                    Qty: {product.stockQuantity}
+                  </span>
+                </div>
                 
                 <div className="relative z-10 mt-3 flex items-end justify-between">
                   <p className="text-lg font-bold text-foreground tracking-tight">
@@ -308,7 +383,14 @@ export default function POSTerminal() {
           )}
         </Button>
       </div>
+      </div>
 
+      {/* Right Sidebar Numpad */}
+      {isNumpadVisible && (
+        <div className="hidden lg:block">
+          <POSNumpad />
+        </div>
+      )}
       {/* Cart Drawer */}
       <CartDrawer
         open={isCartOpen}
@@ -339,7 +421,7 @@ export default function POSTerminal() {
                   <div key={order.id} className="glass-card p-4 rounded-xl flex items-center justify-between gap-4">
                     <div>
                       <div className="flex items-center gap-2 mb-1">
-                        <span className="font-semibold">{order.receiptNumber}</span>
+                        <span className="font-semibold">{order.id.slice(-8).toUpperCase()}</span>
                         <Badge variant={order.status === 'completed' ? 'default' : order.status === 'refunded' ? 'destructive' : 'secondary'}>
                           {order.status}
                         </Badge>
@@ -418,7 +500,7 @@ export default function POSTerminal() {
       {/* Receipt Display & Print */}
       {lastOrder && showReceipt && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 no-print animate-in fade-in duration-200 overflow-y-auto">
-          <div className="glass-card p-4 sm:p-8 rounded-2xl shadow-2xl max-w-lg w-full border border-white/10 my-4">
+          <div className="glass-card p-4 sm:p-8 rounded-2xl shadow-2xl max-w-lg w-full border border-border/20 my-4">
             <div className="text-center mb-6">
               <div className="w-14 h-14 sm:w-16 sm:h-16 bg-success/20 rounded-full flex items-center justify-center mx-auto mb-4 text-success">
                 <svg className="w-7 h-7 sm:w-8 sm:h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -472,7 +554,7 @@ export default function POSTerminal() {
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 sm:gap-3">
               <Button 
                 variant="outline" 
-                className="h-12 border-white/10 hover:bg-white/5" 
+                className="h-12 border-border/20 hover:bg-muted/10 text-foreground" 
                 onClick={handlePrintReceipt}
               >
                 <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -513,3 +595,4 @@ export default function POSTerminal() {
     </div>
   );
 }
+

@@ -26,7 +26,7 @@ export function ReceiveSupplierStockModal({
 
   const [selectedSupplierId, setSelectedSupplierId] = useState('');
   const [scanInput, setScanInput] = useState('');
-  const [items, setItems] = useState<Array<{ productId: string; quantity: string; unitCost: string }>>([]);
+  const [items, setItems] = useState<Array<{ productId: string; quantity: string; unitCost: string; expiryDate: string }>>([]);
   const [paidAmount, setPaidAmount] = useState('0');
   const [invoiceNumber, setInvoiceNumber] = useState('');
   const [purchaseDate, setPurchaseDate] = useState(new Date().toISOString().slice(0, 10));
@@ -84,6 +84,7 @@ export function ReceiveSupplierStockModal({
           productId: product.id,
           quantity: '1',
           unitCost: String(product.costPrice),
+          expiryDate: product.expiryDate || '',
         },
       ];
     });
@@ -106,7 +107,7 @@ export function ReceiveSupplierStockModal({
     setScanInput('');
   };
 
-  const updateItem = (index: number, key: 'productId' | 'quantity' | 'unitCost', value: string) => {
+  const updateItem = (index: number, key: 'productId' | 'quantity' | 'unitCost' | 'expiryDate', value: string) => {
     setItems((prev) => {
       const next = [...prev];
       next[index] = { ...next[index], [key]: value };
@@ -114,6 +115,7 @@ export function ReceiveSupplierStockModal({
         const product = products.find((p) => p.id === value);
         if (product) {
           next[index].unitCost = String(product.costPrice);
+          next[index].expiryDate = product.expiryDate || '';
         }
       }
       return next;
@@ -121,7 +123,7 @@ export function ReceiveSupplierStockModal({
   };
 
   const addEmptyRow = () => {
-    setItems((prev) => [...prev, { productId: '', quantity: '1', unitCost: '' }]);
+    setItems((prev) => [...prev, { productId: '', quantity: '1', unitCost: '', expiryDate: '' }]);
   };
 
   const removeRow = (index: number) => {
@@ -140,7 +142,7 @@ export function ReceiveSupplierStockModal({
       return;
     }
 
-    const normalizedItems: Array<{ productId: string; quantity: number; unitCost: number }> = [];
+    const normalizedItems: Array<{ productId: string; quantity: number; unitCost: number; expiryDate?: string }> = [];
 
     for (const item of items) {
       const product = products.find((p) => p.id === item.productId);
@@ -167,6 +169,7 @@ export function ReceiveSupplierStockModal({
         productId: product.id,
         quantity: qty,
         unitCost,
+        expiryDate: item.expiryDate.trim() || undefined,
       });
     }
 
@@ -204,7 +207,7 @@ export function ReceiveSupplierStockModal({
         onOpenChange(nextOpen);
       }}
     >
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-3xl">
         <DialogHeader>
           <DialogTitle>Receive Supplier Stock</DialogTitle>
         </DialogHeader>
@@ -271,7 +274,7 @@ export function ReceiveSupplierStockModal({
               ) : (
                 items.map((item, index) => (
                   <div key={`${item.productId}-${index}`} className="grid grid-cols-12 gap-2 items-end border rounded-md p-2">
-                    <div className="col-span-6 space-y-1">
+                    <div className="col-span-4 space-y-1">
                       <Label className="text-xs">Product</Label>
                       <select
                         value={item.productId}
@@ -297,7 +300,7 @@ export function ReceiveSupplierStockModal({
                         onChange={(e) => updateItem(index, 'quantity', e.target.value)}
                       />
                     </div>
-                    <div className="col-span-3 space-y-1">
+                    <div className="col-span-2 space-y-1">
                       <Label className="text-xs">Cost</Label>
                       <Input
                         type="number"
@@ -305,6 +308,14 @@ export function ReceiveSupplierStockModal({
                         step="0.01"
                         value={item.unitCost}
                         onChange={(e) => updateItem(index, 'unitCost', e.target.value)}
+                      />
+                    </div>
+                    <div className="col-span-3 space-y-1">
+                      <Label className="text-xs">Expiry</Label>
+                      <Input
+                        type="date"
+                        value={item.expiryDate}
+                        onChange={(e) => updateItem(index, 'expiryDate', e.target.value)}
                       />
                     </div>
                     <div className="col-span-1 flex justify-end">

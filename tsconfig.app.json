@@ -27,7 +27,7 @@
     "noUnusedParameters": false,
     "noImplicitAny": false,
     "noFallthroughCasesInSwitch": false,
-    "ignoreDeprecations": "6.0",
+
     "forceConsistentCasingInFileNames": true,
 
     "baseUrl": ".",
