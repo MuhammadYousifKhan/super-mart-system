@@ -16,6 +16,34 @@ export interface AuthContextType {
   deleteUser: (email: string) => boolean;
 }
 
+// ============================================================
+// Local / Demo Mode
+// Activated automatically when VITE_SUPABASE_URL is not set.
+// ============================================================
+const IS_LOCAL_MODE = !import.meta.env.VITE_SUPABASE_URL;
+
+const DEFAULT_LOCAL_USERS: UserCredentials[] = [
+  { email: 'admin@pos.com', password: 'password', fullName: 'Admin User', role: 'admin' },
+  { email: 'cashier@pos.com', password: 'password', fullName: 'Cashier User', role: 'cashier' },
+  { email: 'frontdesk@pos.com', password: 'password', fullName: 'Front Desk', role: 'frontdesk' },
+];
+
+function getLocalUsers(): UserCredentials[] {
+  try {
+    const stored = localStorage.getItem('pos_local_users');
+    if (stored) return JSON.parse(stored);
+  } catch { /* ignore */ }
+  return DEFAULT_LOCAL_USERS;
+}
+
+function saveLocalUsers(users: UserCredentials[]) {
+  localStorage.setItem('pos_local_users', JSON.stringify(users));
+}
+
+// ============================================================
+// Supabase helpers (unchanged, used only when Supabase is configured)
+// ============================================================
+
 function withTimeout<T>(promise: PromiseLike<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
   return Promise.race([
     Promise.resolve(promise),
@@ -49,14 +77,41 @@ function resolveDisplayName(row: UserRoleRow | null, fallbackEmail: string): str
   return row?.full_name || row?.fullName || row?.name || fallbackEmail.split('@')[0];
 }
 
+// ============================================================
+// Provider
+// ============================================================
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [dbUsers, setDbUsers] = useState<UserCredentials[]>([]);
   const hasLoggedProfileTimeout = useRef(false);
 
+  // ----------------------------------------------------------
+  // LOCAL MODE: simple credential check against localStorage
+  // ----------------------------------------------------------
   useEffect(() => {
-    // Check active sessions and sets the user
+    if (IS_LOCAL_MODE) {
+      console.info(
+        '%c[LOCAL MODE] Supabase is not configured. Using demo accounts.\n' +
+        'Login with: admin@pos.com / password  (or cashier@pos.com / frontdesk@pos.com)',
+        'color: #f59e0b; font-weight: bold;'
+      );
+
+      // Restore session from localStorage
+      const savedSession = localStorage.getItem('pos_local_session');
+      if (savedSession) {
+        try {
+          setUser(JSON.parse(savedSession));
+        } catch { /* ignore bad data */ }
+      }
+      setIsLoading(false);
+      return;
+    }
+
+    // ----------------------------------------------------------
+    // SUPABASE MODE (original logic)
+    // ----------------------------------------------------------
     const checkSession = async () => {
       setIsLoading(true);
       try {
@@ -65,7 +120,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           SESSION_REQUEST_TIMEOUT_MS,
           'Auth session request timed out'
         );
-        
+
         if (error) {
           console.error("Auth session error:", error);
           setIsLoading(false);
@@ -86,10 +141,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setIsLoading(false);
       }
     };
-    
+
     checkSession();
 
-    // Listen for auth changes (Login, Logout)
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
       if (session?.user) {
         await loadUserProfile(session.user.id, session.user.email!);
@@ -104,29 +158,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  // ----------------------------------------------------------
+  // Supabase profile helpers
+  // ----------------------------------------------------------
   const loadUserProfile = async (userId: string, email: string) => {
     try {
-      // Primary lookup by authenticated user id
       const { data: roleByUserId, error: byUserIdError } = await withTimeout(
-        supabase
-          .from('user_roles')
-          .select('*')
-          .eq('user_id', userId)
-          .maybeSingle(),
+        supabase.from('user_roles').select('*').eq('user_id', userId).maybeSingle(),
         PROFILE_REQUEST_TIMEOUT_MS,
         'User role query by user_id timed out'
       );
 
       let resolvedRoleRow: UserRoleRow | null = (roleByUserId as UserRoleRow | null) || null;
 
-      // Fallback lookup by email in case existing rows were inserted without correct user_id mapping
       if (!resolvedRoleRow) {
         const { data: roleByEmail, error: byEmailError } = await withTimeout(
-          supabase
-            .from('user_roles')
-            .select('*')
-            .eq('email', email)
-            .maybeSingle(),
+          supabase.from('user_roles').select('*').eq('email', email).maybeSingle(),
           PROFILE_REQUEST_TIMEOUT_MS,
           'User role query by email timed out'
         );
@@ -145,12 +192,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             console.error('Failed to fetch user role by email fallback:', byEmailError);
           }
 
-          setUser({
-            id: userId,
-            email,
-            fullName: email.split('@')[0],
-            role: 'cashier',
-          });
+          setUser({ id: userId, email, fullName: email.split('@')[0], role: 'cashier' });
           return;
         }
 
@@ -171,12 +213,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           console.error('Failed to fetch user role by user_id:', byUserIdError);
         }
 
-        setUser({
-          id: userId,
-          email,
-          fullName: email.split('@')[0],
-          role: 'cashier',
-        });
+        setUser({ id: userId, email, fullName: email.split('@')[0], role: 'cashier' });
         return;
       }
 
@@ -191,12 +228,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (resolvedRole === 'admin') fetchAllUsers();
       } else {
         console.warn('No role row found in user_roles for this login. Falling back to cashier role.');
-        setUser({
-          id: userId,
-          email,
-          fullName: email.split('@')[0],
-          role: 'cashier',
-        });
+        setUser({ id: userId, email, fullName: email.split('@')[0], role: 'cashier' });
       }
     } catch (err) {
       const message = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
@@ -208,13 +240,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       } else {
         console.error("Failed to load user profile:", err);
       }
-      // Fallback if request fails (e.g., DNS error after successfully caching session)
-      setUser({
-        id: userId,
-        email: email,
-        fullName: email.split('@')[0],
-        role: 'cashier',
-      });
+      setUser({ id: userId, email, fullName: email.split('@')[0], role: 'cashier' });
     } finally {
       setIsLoading(false);
     }
@@ -226,7 +252,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (data) {
         setDbUsers(data.map(d => ({
           email: d.email,
-          password: '***', // We do not return actual passwords from Supabase
+          password: '***',
           fullName: d.full_name,
           role: d.role as UserRole
         })));
@@ -236,20 +262,46 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  // ----------------------------------------------------------
+  // Login
+  // ----------------------------------------------------------
   const login = async (email: string, password: string): Promise<boolean> => {
     setIsLoading(true);
+
+    // LOCAL MODE
+    if (IS_LOCAL_MODE) {
+      const users = getLocalUsers();
+      const match = users.find(
+        u => u.email.toLowerCase() === email.toLowerCase() && u.password === password
+      );
+
+      if (match) {
+        const localUser: User = {
+          id: `local-${match.email}`,
+          email: match.email,
+          fullName: match.fullName,
+          role: match.role,
+        };
+        setUser(localUser);
+        localStorage.setItem('pos_local_session', JSON.stringify(localUser));
+        setIsLoading(false);
+        return true;
+      } else {
+        toast.error('Invalid email or password');
+        setIsLoading(false);
+        return false;
+      }
+    }
+
+    // SUPABASE MODE
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
 
       if (error) {
         toast.error(error.message);
         return false;
       }
 
-      // Resolve role from user_roles immediately after auth to avoid temporary cashier role.
       if (data?.user) {
         await loadUserProfile(data.user.id, data.user.email || email);
       } else {
@@ -260,11 +312,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return true;
     } catch (err) {
       const rawMessage =
-        err instanceof Error
-          ? err.message
-          : typeof err === 'string'
-            ? err
-            : JSON.stringify(err);
+        err instanceof Error ? err.message : typeof err === 'string' ? err : JSON.stringify(err);
       const message = rawMessage.toLowerCase();
       const isNetworkError =
         message.includes('failed to fetch') ||
@@ -283,30 +331,74 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  // ----------------------------------------------------------
+  // Logout
+  // ----------------------------------------------------------
   const logout = async () => {
+    if (IS_LOCAL_MODE) {
+      localStorage.removeItem('pos_local_session');
+      setUser(null);
+      return;
+    }
     await supabase.auth.signOut();
     setUser(null);
   };
 
-  // --------------------------------------------------------
-  // NOTE: User Management (Create/Update/Delete) via UI requires a Supabase Backend.
-  // We mock the local state updates so the UI doesn't crash, but tell the user to use 
-  // the Supabase Dashboard for true management.
-  // --------------------------------------------------------
-
+  // ----------------------------------------------------------
+  // User management
+  // ----------------------------------------------------------
   const updateCredentials = (oldEmail: string, newCredentials: Partial<UserCredentials>): boolean => {
+    if (IS_LOCAL_MODE) {
+      const users = getLocalUsers();
+      const idx = users.findIndex(u => u.email.toLowerCase() === oldEmail.toLowerCase());
+      if (idx === -1) { toast.error('User not found'); return false; }
+      users[idx] = { ...users[idx], ...newCredentials };
+      saveLocalUsers(users);
+      setDbUsers([...users]);
+      toast.success('Credentials updated (local mode)');
+      return true;
+    }
     toast.error("Multi-user setup requires password resets to be handled via Supabase Dashboard or authenticated emails.");
     return false;
   };
 
-  const getUsers = () => dbUsers;
+  const getUsers = (): UserCredentials[] => {
+    if (IS_LOCAL_MODE) return getLocalUsers();
+    return dbUsers;
+  };
 
   const createUser = (credentials: Omit<UserCredentials, 'role'> & { role?: UserRole }): boolean => {
+    if (IS_LOCAL_MODE) {
+      const users = getLocalUsers();
+      if (users.find(u => u.email.toLowerCase() === credentials.email.toLowerCase())) {
+        toast.error('A user with this email already exists');
+        return false;
+      }
+      const newUser: UserCredentials = {
+        email: credentials.email,
+        password: credentials.password,
+        fullName: credentials.fullName,
+        role: credentials.role || 'cashier',
+      };
+      users.push(newUser);
+      saveLocalUsers(users);
+      setDbUsers([...users]);
+      toast.success('User created (local mode)');
+      return true;
+    }
     toast.info("With real Authentication enabled, you must create edge workers or use the Supabase Dashboard to safely provision new user accounts without losing your current admin session.");
     return false;
   };
 
   const deleteUser = (email: string): boolean => {
+    if (IS_LOCAL_MODE) {
+      let users = getLocalUsers();
+      users = users.filter(u => u.email.toLowerCase() !== email.toLowerCase());
+      saveLocalUsers(users);
+      setDbUsers([...users]);
+      toast.success('User deleted (local mode)');
+      return true;
+    }
     toast.error("User deletion must be done from Supabase Auth Dashboard in production.");
     return false;
   };
@@ -329,4 +421,5 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     </AuthContext.Provider>
   );
 }
+
 

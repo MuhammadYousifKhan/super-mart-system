@@ -50,6 +50,7 @@ export function CheckoutModal({ open, onOpenChange, onComplete }: CheckoutModalP
   const [transferType, setTransferType] = useState<TransferType>('bank');
   const [transactionId, setTransactionId] = useState('');
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const total = calculateTotal();
   const tendered = parseFloat(amountTendered) || 0;
@@ -104,23 +105,31 @@ export function CheckoutModal({ open, onOpenChange, onComplete }: CheckoutModalP
       customerId = customer.id;
     }
 
-    const order = await createOrder({
-      items: cart,
-      paymentMethod,
-      globalDiscount,
-      globalDiscountType,
-      amountTendered: paymentMethod === 'cash' ? tendered : undefined,
-      clientName: finalClientName || undefined,
-      clientPhone: finalClientPhone || undefined,
-      transferType: paymentMethod === 'transfer' ? transferType : undefined,
-      transactionId: paymentMethod === 'transfer' ? transactionId : undefined,
-      customerId: paymentMethod === 'credit' ? customerId : undefined,
-    });
+    setIsSubmitting(true);
+    try {
+      const order = await createOrder({
+        items: cart,
+        paymentMethod,
+        globalDiscount,
+        globalDiscountType,
+        amountTendered: paymentMethod === 'cash' ? tendered : undefined,
+        clientName: finalClientName || undefined,
+        clientPhone: finalClientPhone || undefined,
+        transferType: paymentMethod === 'transfer' ? transferType : undefined,
+        transactionId: paymentMethod === 'transfer' ? transactionId : undefined,
+        customerId: paymentMethod === 'credit' ? customerId : undefined,
+      });
 
-    clearCart();
-    resetForm();
-    toast.success('Transaction completed!');
-    onComplete(order);
+      clearCart();
+      resetForm();
+      toast.success('Transaction completed!');
+      onComplete(order);
+    } catch (error) {
+      console.error('Checkout error:', error);
+      toast.error('Failed to complete checkout');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const resetForm = () => {
@@ -365,9 +374,9 @@ export function CheckoutModal({ open, onOpenChange, onComplete }: CheckoutModalP
             size="lg"
             className="w-full h-12"
             onClick={handleComplete}
-            disabled={!canProceed()}
+            disabled={!canProceed() || isSubmitting}
           >
-            Complete Sale
+            {isSubmitting ? 'Processing...' : 'Complete Sale'}
           </Button>
         </div>
       </DialogContent>

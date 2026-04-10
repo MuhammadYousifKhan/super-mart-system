@@ -184,3 +184,14 @@ export interface HeldCart {
   heldAt: string;
   note?: string;
 }
+
+export interface OrderEditLog {
+  id: string;
+  orderId: string;
+  editedBy: string;       // user email or fullName
+  editedAt: string;       // ISO date string
+  changesSummary: string;  // human-readable summary of changes
+  previousOrder: Partial<Order>;
+  previousItems: OrderItem[];
+}
+

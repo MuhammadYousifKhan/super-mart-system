@@ -5,6 +5,7 @@ import {
   Unit,
   Order,
   OrderItem,
+  OrderEditLog,
   StoreSettings,
   CartItem,
   HeldCart,
@@ -119,10 +120,13 @@ export interface StoreContextType {
   // Orders
   orders: Order[];
   orderItems: OrderItem[];
+  orderEditLogs: OrderEditLog[];
   createOrder: (options: CreateOrderOptions) => Promise<Order>;
   updateOrder: (id: string, updates: Partial<Order>) => Promise<void>;
+  updateOrderFull: (id: string, newItems: Array<{ productId: string; productName: string; productSku: string; quantity: number; unitPrice: number; discountAmount: number }>, orderUpdates: Partial<Order>) => Promise<void>;
   cancelOrder: (id: string) => Promise<void>;
   getOrderItems: (orderId: string) => OrderItem[];
+  getOrderEditLogs: (orderId: string) => OrderEditLog[];
   getCustomerOrders: (customerId: string) => Order[];
 
   // Settings
@@ -284,6 +288,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [supplierPurchases, setSupplierPurchases] = useState<SupplierPurchase[]>([]);
   const [supplierPaymentSchedules, setSupplierPaymentSchedules] = useState<SupplierPaymentSchedule[]>([]);
+  const [orderEditLogs, setOrderEditLogs] = useState<OrderEditLog[]>([]);
   const [pendingSyncOps, setPendingSyncOps] = useState<PendingSyncOperation[]>(() => loadPendingSyncQueue());
   const [loading, setLoading] = useState(true);
   const isProcessingPendingSync = useRef(false);
@@ -1081,6 +1086,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setSuppliers(loadData('pos_suppliers', []));
       setSupplierPurchases(loadData('pos_supplier_purchases', []));
       setSupplierPaymentSchedules(loadData('pos_supplier_payment_schedules', []));
+      setOrderEditLogs(loadData('pos_order_edit_logs', []));
     };
 
     fetchData();
@@ -1661,6 +1667,330 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         }
       }
     }
+  };
+
+  const updateOrderFull = async (
+    id: string,
+    newItems: Array<{
+      productId: string;
+      productName: string;
+      productSku: string;
+      quantity: number;
+      unitPrice: number;
+      discountAmount: number;
+    }>,
+    orderUpdates: Partial<Order>
+  ) => {
+    const existingOrder = orders.find((o) => o.id === id);
+    if (!existingOrder) {
+      toast.error('Order not found');
+      return;
+    }
+    if (existingOrder.status === 'refunded') {
+      toast.error('Cannot edit a cancelled/refunded bill');
+      return;
+    }
+
+    const oldItems = orderItems.filter((item) => item.orderId === id);
+
+    // --- Build audit log ---
+    const changes: string[] = [];
+    const oldItemMap = new Map(oldItems.map((i) => [i.productId, i]));
+    const newItemMap = new Map(newItems.map((i) => [i.productId, i]));
+
+    // Check removed items
+    for (const oi of oldItems) {
+      if (!newItemMap.has(oi.productId)) {
+        changes.push(`Removed ${oi.productName} (×${oi.quantity})`);
+      }
+    }
+    // Check added or changed items
+    for (const ni of newItems) {
+      const existing = oldItemMap.get(ni.productId);
+      if (!existing) {
+        changes.push(`Added ${ni.productName} (×${ni.quantity})`);
+      } else {
+        const diffs: string[] = [];
+        if (existing.quantity !== ni.quantity) diffs.push(`qty: ${existing.quantity}→${ni.quantity}`);
+        if (existing.unitPriceAtSale !== ni.unitPrice) diffs.push(`price: ${existing.unitPriceAtSale}→${ni.unitPrice}`);
+        if (existing.discountAmount !== ni.discountAmount) diffs.push(`discount: ${existing.discountAmount}→${ni.discountAmount}`);
+        if (diffs.length > 0) changes.push(`${ni.productName}: ${diffs.join(', ')}`);
+      }
+    }
+    // Check order-level field changes
+    if (orderUpdates.clientName !== undefined && orderUpdates.clientName !== existingOrder.clientName) {
+      changes.push(`Client name: "${existingOrder.clientName || ''}" → "${orderUpdates.clientName}"`);
+    }
+    if (orderUpdates.clientPhone !== undefined && orderUpdates.clientPhone !== existingOrder.clientPhone) {
+      changes.push(`Client phone: "${existingOrder.clientPhone || ''}" → "${orderUpdates.clientPhone}"`);
+    }
+    if (orderUpdates.paymentMethod !== undefined && orderUpdates.paymentMethod !== existingOrder.paymentMethod) {
+      changes.push(`Payment: ${existingOrder.paymentMethod} → ${orderUpdates.paymentMethod}`);
+    }
+
+    const editLog: OrderEditLog = {
+      id: generateId(),
+      orderId: id,
+      editedBy: user?.fullName || user?.email || 'Unknown',
+      editedAt: new Date().toISOString(),
+      changesSummary: changes.length > 0 ? changes.join('; ') : 'No changes detected',
+      previousOrder: {
+        subtotal: existingOrder.subtotal,
+        taxAmount: existingOrder.taxAmount,
+        discountAmount: existingOrder.discountAmount,
+        totalAmount: existingOrder.totalAmount,
+        paymentMethod: existingOrder.paymentMethod,
+        clientName: existingOrder.clientName,
+        clientPhone: existingOrder.clientPhone,
+      },
+      previousItems: [...oldItems],
+    };
+
+    // --- Restore stock for old items ---
+    for (const oi of oldItems) {
+      const product = products.find((p) => p.id === oi.productId);
+      if (product) {
+        await updateProduct(oi.productId, {
+          stockQuantity: product.stockQuantity + oi.quantity,
+        });
+      }
+    }
+
+    // --- Deduct stock for new items ---
+    for (const ni of newItems) {
+      // Re-fetch product after restoration above
+      const product = products.find((p) => p.id === ni.productId);
+      if (product) {
+        await updateProduct(ni.productId, {
+          stockQuantity: product.stockQuantity + (oldItems.find(o => o.productId === ni.productId)?.quantity || 0) - ni.quantity,
+        });
+      }
+    }
+
+    // --- Recalculate totals ---
+    const subtotal = Number(newItems.reduce((sum, item) => {
+      const itemTotal = item.unitPrice * item.quantity;
+      return sum + itemTotal - item.discountAmount;
+    }, 0).toFixed(2));
+
+    const taxAmount = Number(((subtotal * settings.taxRate) / 100).toFixed(2));
+
+    const paymentMethod = orderUpdates.paymentMethod || existingOrder.paymentMethod;
+    const cardFeeRate = paymentMethod === 'card' ? (settings.cardFeePercent || 0) : 0;
+    const cardFeeAmount = cardFeeRate > 0 ? Number(((subtotal + taxAmount) * cardFeeRate / 100).toFixed(2)) : 0;
+
+    const totalAmount = Number((subtotal + taxAmount + cardFeeAmount).toFixed(2));
+    const totalDiscount = Number(newItems.reduce((sum, item) => sum + item.discountAmount, 0).toFixed(2));
+
+    // --- LEDGER SYNCHRONIZATION (High Reliability) ---
+    const finalPaymentMethod = orderUpdates.paymentMethod || existingOrder.paymentMethod;
+    const finalCustomerId = orderUpdates.customerId || existingOrder.customerId;
+    
+    const ledgerFieldsChanged = 
+        Number(existingOrder.totalAmount.toFixed(2)) !== totalAmount || 
+        existingOrder.paymentMethod !== finalPaymentMethod || 
+        existingOrder.customerId !== finalCustomerId;
+
+    if (ledgerFieldsChanged) {
+        // Step 1: Reverse old debt if it existed
+        if (existingOrder.paymentMethod === 'credit' && existingOrder.customerId) {
+            const oldCustomer = customers.find((c) => c.id === existingOrder.customerId);
+            if (oldCustomer) {
+                const reversalAmount = Number(existingOrder.totalAmount.toFixed(2));
+                const newTotalCredit = Number((oldCustomer.totalCredit - reversalAmount).toFixed(2));
+                const newBalance = Number((newTotalCredit - oldCustomer.totalPaid).toFixed(2));
+
+                // Update Local State
+                setCustomers((prev) =>
+                    prev.map((c) =>
+                        c.id === oldCustomer.id
+                            ? { ...c, totalCredit: newTotalCredit, balance: newBalance }
+                            : c
+                    )
+                );
+
+                const reversalTransaction: CustomerTransaction = {
+                    id: generateId(),
+                    customerId: oldCustomer.id,
+                    orderId: id,
+                    type: 'payment',
+                    amount: reversalAmount,
+                    description: `Credit reversal - Edited order #${id.slice(-8).toUpperCase()}`,
+                    createdAt: new Date().toISOString(),
+                };
+                setCustomerTransactions((prev) => [...prev, reversalTransaction]);
+
+                // Update Database Reliable (Await)
+                if (import.meta.env.VITE_SUPABASE_URL) {
+                    try {
+                        const [txRes, custRes] = await Promise.all([
+                            supabase.from('customer_transactions').insert({
+                                id: reversalTransaction.id,
+                                customer_id: reversalTransaction.customerId,
+                                order_id: reversalTransaction.orderId,
+                                type: reversalTransaction.type,
+                                amount: reversalTransaction.amount,
+                                description: reversalTransaction.description,
+                                created_at: reversalTransaction.createdAt,
+                            }),
+                            supabase.from('customers').update({ 
+                                total_credit: newTotalCredit, 
+                                balance: newBalance 
+                            }).eq('id', oldCustomer.id),
+                        ]);
+                        if (txRes.error || custRes.error) throw txRes.error || custRes.error;
+                    } catch (err) {
+                        console.error('Error reversing debt:', err);
+                        toast.error('Ledger reversal failed in database');
+                    }
+                }
+            }
+        }
+
+        // Step 2: Apply new debt if applicable
+        if (finalPaymentMethod === 'credit' && finalCustomerId) {
+            const baseCustomer = customers.find(c => c.id === finalCustomerId);
+            if (baseCustomer) {
+                let customerTotalCredit = baseCustomer.totalCredit;
+                if (existingOrder.customerId === finalCustomerId && existingOrder.paymentMethod === 'credit') {
+                    customerTotalCredit -= Number(existingOrder.totalAmount.toFixed(2));
+                }
+                
+                const newTotalCredit = Number((customerTotalCredit + totalAmount).toFixed(2));
+                const newBalance = Number((newTotalCredit - baseCustomer.totalPaid).toFixed(2));
+                
+                // Update Local State
+                setCustomers((prev) =>
+                    prev.map((c) =>
+                        c.id === finalCustomerId
+                            ? { ...c, totalCredit: newTotalCredit, balance: newBalance }
+                            : c
+                    )
+                );
+
+                const creditTransaction: CustomerTransaction = {
+                    id: generateId(),
+                    customerId: finalCustomerId,
+                    orderId: id,
+                    type: 'credit',
+                    amount: totalAmount,
+                    description: `Credit sale - Edited order #${id.slice(-8).toUpperCase()}`,
+                    createdAt: new Date().toISOString(),
+                };
+                setCustomerTransactions((prev) => [...prev, creditTransaction]);
+
+                // Update Database Reliable (Await)
+                if (import.meta.env.VITE_SUPABASE_URL) {
+                    try {
+                        const [txRes, custRes] = await Promise.all([
+                            supabase.from('customer_transactions').insert({
+                                id: creditTransaction.id,
+                                customer_id: creditTransaction.customerId,
+                                order_id: creditTransaction.orderId,
+                                type: creditTransaction.type,
+                                amount: creditTransaction.amount,
+                                description: creditTransaction.description,
+                                created_at: creditTransaction.createdAt,
+                            }),
+                            supabase.from('customers').update({ 
+                                total_credit: newTotalCredit, 
+                                balance: newBalance 
+                            }).eq('id', finalCustomerId),
+                        ]);
+                        if (txRes.error || custRes.error) throw txRes.error || custRes.error;
+                    } catch (err) {
+                        console.error('Error applying new debt:', err);
+                        toast.error('Ledger application failed in database');
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Build new OrderItem[] ---
+    const newOrderItems: OrderItem[] = newItems.map((item) => ({
+      id: generateId(),
+      orderId: id,
+      productId: item.productId,
+      productName: item.productName,
+      productSku: item.productSku,
+      quantity: item.quantity,
+      unitPriceAtSale: item.unitPrice,
+      discountAmount: item.discountAmount,
+    }));
+
+    // --- Update state ---
+    setOrderItems((prev) => [
+      ...prev.filter((item) => item.orderId !== id),
+      ...newOrderItems,
+    ]);
+
+    const orderUpdate: Partial<Order> = {
+      ...orderUpdates,
+      subtotal,
+      taxAmount,
+      discountAmount: totalDiscount,
+      totalAmount,
+      cardFeeAmount: cardFeeAmount || undefined,
+      cardFeeRate: cardFeeRate || undefined,
+    };
+
+    setOrders((prev) =>
+      prev.map((o) => (o.id === id ? { ...o, ...orderUpdate } : o))
+    );
+
+    // Persist edit log
+    const updatedLogs = [...orderEditLogs, editLog];
+    setOrderEditLogs(updatedLogs);
+
+    // --- Persist to storage ---
+    if (import.meta.env.VITE_SUPABASE_URL) {
+      // Delete old order items and insert new ones
+      try {
+        await supabase.from('order_items').delete().eq('order_id', id);
+        await supabase.from('order_items').insert(
+          newOrderItems.map((item) => ({
+            id: item.id,
+            order_id: item.orderId,
+            product_id: item.productId,
+            product_name: item.productName,
+            product_sku: item.productSku,
+            quantity: item.quantity,
+            unit_price_at_sale: item.unitPriceAtSale,
+            discount_amount: item.discountAmount,
+          }))
+        );
+
+        const dbUpdates: any = {};
+        if (orderUpdate.subtotal !== undefined) dbUpdates.subtotal = orderUpdate.subtotal;
+        if (orderUpdate.taxAmount !== undefined) dbUpdates.tax_amount = orderUpdate.taxAmount;
+        if (orderUpdate.discountAmount !== undefined) dbUpdates.discount_amount = orderUpdate.discountAmount;
+        if (orderUpdate.totalAmount !== undefined) dbUpdates.total_amount = orderUpdate.totalAmount;
+        if (orderUpdate.paymentMethod !== undefined) dbUpdates.payment_method = orderUpdate.paymentMethod;
+        if (orderUpdate.clientName !== undefined) dbUpdates.client_name = orderUpdate.clientName;
+        if (orderUpdate.clientPhone !== undefined) dbUpdates.client_phone = orderUpdate.clientPhone;
+        if (orderUpdate.cardFeeAmount !== undefined) dbUpdates.card_fee_amount = orderUpdate.cardFeeAmount;
+        if (orderUpdate.cardFeeRate !== undefined) dbUpdates.card_fee_rate = orderUpdate.cardFeeRate;
+        if (orderUpdate.customerId !== undefined) dbUpdates.customer_id = orderUpdate.customerId;
+
+        await supabase.from('orders').update(dbUpdates).eq('id', id);
+      } catch (error) {
+        console.error('Error updating order in database:', error);
+        toast.error('Failed to sync edited bill to database');
+      }
+    } else {
+      const allOrders = orders.map((o) => (o.id === id ? { ...o, ...orderUpdate } : o));
+      localStorage.setItem('pos_orders', JSON.stringify(allOrders));
+      const allItems = orderItems.filter((item) => item.orderId !== id).concat(newOrderItems);
+      localStorage.setItem('pos_order_items', JSON.stringify(allItems));
+      localStorage.setItem('pos_order_edit_logs', JSON.stringify(updatedLogs));
+    }
+
+    toast.success('Bill updated successfully');
+  };
+
+  const getOrderEditLogs = (orderId: string): OrderEditLog[] => {
+    return orderEditLogs.filter((log) => log.orderId === orderId);
   };
 
   const updateSettings = async (updates: Partial<StoreSettings>) => {
@@ -2545,10 +2875,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         markSupplierSchedulePaid,
         orders,
         orderItems,
+        orderEditLogs,
         createOrder,
         updateOrder,
+        updateOrderFull,
         cancelOrder,
         getOrderItems,
+        getOrderEditLogs,
         getCustomerOrders,
         settings,
         updateSettings,

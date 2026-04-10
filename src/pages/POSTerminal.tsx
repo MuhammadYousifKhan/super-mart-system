@@ -18,6 +18,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { formatPKR } from '@/pages/Analytics';
 import {
   Search,
@@ -27,9 +34,13 @@ import {
   XCircle,
   Pencil,
   Calculator,
+  Trash2,
+  Plus,
+  Minus,
+  User,
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { Order } from '@/types/pos';
+import { Order, OrderItem } from '@/types/pos';
 import { format } from 'date-fns';
 import { POSNumpad } from '@/components/pos/POSNumpad';
 
@@ -45,10 +56,15 @@ export default function POSTerminal() {
     settings,
     calculateTotal,
     updateOrder,
+    updateOrderFull,
     cancelOrder,
     holdCart,
     updateCartItem,
     removeFromCart,
+    getOrderItems,
+    getOrderEditLogs,
+    customers,
+    getCustomerById,
   } = useStore();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -63,9 +79,43 @@ export default function POSTerminal() {
   const [editClientName, setEditClientName] = useState('');
   const [editClientPhone, setEditClientPhone] = useState('');
   const [isNumpadVisible, setIsNumpadVisible] = useState(true);
+  const [showEditHistory, setShowEditHistory] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
+  // Full bill editor state
+  interface EditItem {
+    productId: string;
+    productName: string;
+    productSku: string;
+    quantity: number;
+    unitPrice: number;
+    discountAmount: number;
+  }
+  const [editItems, setEditItems] = useState<EditItem[]>([]);
+  const [editProductSearch, setEditProductSearch] = useState('');
+  const [editPaymentMethod, setEditPaymentMethod] = useState<string>('');
+  const [editCustomerId, setEditCustomerId] = useState<string>('');
+
   const recentOrders = orders.slice(0, 50);
+
+  // Filtered products for the edit dialog add-product search
+  const editFilteredProducts = editProductSearch.trim()
+    ? products.filter(
+        (p) =>
+          p.name.toLowerCase().includes(editProductSearch.toLowerCase()) ||
+          p.sku.toLowerCase().includes(editProductSearch.toLowerCase())
+      ).slice(0, 5)
+    : [];
+
+  // Calculate edit totals in real-time
+  const editSubtotal = editItems.reduce(
+    (sum, item) => sum + item.unitPrice * item.quantity - item.discountAmount,
+    0
+  );
+  const editTax = (editSubtotal * settings.taxRate) / 100;
+  const editCardFeeRate = (editPaymentMethod || selectedOrder?.paymentMethod) === 'card' ? (settings.cardFeePercent || 0) : 0;
+  const editCardFee = editCardFeeRate > 0 ? ((editSubtotal + editTax) * editCardFeeRate) / 100 : 0;
+  const editTotal = editSubtotal + editTax + editCardFee;
 
   const filteredProducts = products.filter(
     (p) =>
@@ -135,16 +185,65 @@ export default function POSTerminal() {
     setSelectedOrder(order);
     setEditClientName(order.clientName || '');
     setEditClientPhone(order.clientPhone || '');
+    setEditPaymentMethod(order.paymentMethod);
+    setEditCustomerId(order.customerId || '');
+    setShowEditHistory(false);
+
+    // Load existing order items into editable state
+    const currentItems = getOrderItems(order.id);
+    setEditItems(
+      currentItems.map((item) => ({
+        productId: item.productId,
+        productName: item.productName,
+        productSku: item.productSku,
+        quantity: item.quantity,
+        unitPrice: item.unitPriceAtSale,
+        discountAmount: item.discountAmount,
+      }))
+    );
+    setEditProductSearch('');
     setIsEditBillDialogOpen(true);
+  };
+
+  const handleAddProductToEdit = (product: typeof products[0]) => {
+    const existing = editItems.find((item) => item.productId === product.id);
+    if (existing) {
+      setEditItems((prev) =>
+        prev.map((item) =>
+          item.productId === product.id
+            ? { ...item, quantity: item.quantity + 1 }
+            : item
+        )
+      );
+    } else {
+      setEditItems((prev) => [
+        ...prev,
+        {
+          productId: product.id,
+          productName: product.name,
+          productSku: product.sku,
+          quantity: 1,
+          unitPrice: product.sellingPrice,
+          discountAmount: 0,
+        },
+      ]);
+    }
+    setEditProductSearch('');
+    toast.success(`Added ${product.name} to bill`);
   };
 
   const handleSaveBillEdit = async () => {
     if (!selectedOrder) return;
-    await updateOrder(selectedOrder.id, {
+    if (editItems.length === 0) {
+      toast.error('Bill must have at least one item');
+      return;
+    }
+    await updateOrderFull(selectedOrder.id, editItems, {
       clientName: editClientName.trim() || undefined,
       clientPhone: editClientPhone.trim() || undefined,
+      paymentMethod: editPaymentMethod as any,
+      customerId: editCustomerId || undefined,
     });
-    toast.success('Bill updated successfully');
     setIsEditBillDialogOpen(false);
   };
 
@@ -434,7 +533,8 @@ export default function POSTerminal() {
                     </div>
                     <div className="flex gap-2">
                       <Button variant="outline" size="sm" onClick={() => openEditBillDialog(order)}>
-                        Edit Info
+                        <Pencil className="w-3.5 h-3.5 mr-1.5" />
+                        Edit Bill
                       </Button>
                       <Button 
                         variant="destructive" 
@@ -458,33 +558,301 @@ export default function POSTerminal() {
       </Dialog>
 
 
-      {/* Edit Bill Details Dialog */}
+      {/* Full Bill Editor Dialog */}
       <Dialog open={isEditBillDialogOpen} onOpenChange={setIsEditBillDialogOpen}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-3xl max-h-[90vh] flex flex-col">
           <DialogHeader>
-            <DialogTitle>Edit Bill Details</DialogTitle>
+            <DialogTitle className="text-xl font-bold flex items-center gap-2">
+              <Pencil className="w-5 h-5 text-primary" />
+              Edit Bill {selectedOrder?.id.slice(-8).toUpperCase()}
+            </DialogTitle>
           </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label>Client Name</Label>
-              <Input 
-                value={editClientName} 
-                onChange={(e) => setEditClientName(e.target.value)} 
-                placeholder="Enter client name" 
-              />
+
+          <div className="flex-1 overflow-auto space-y-5 py-2">
+            {/* Items Table */}
+            <div>
+              <Label className="text-sm font-semibold mb-2 block">Items</Label>
+              <div className="border rounded-lg overflow-hidden">
+                <div className="grid grid-cols-[1fr_80px_100px_90px_80px_40px] gap-2 px-3 py-2 bg-muted/50 text-xs font-medium text-muted-foreground">
+                  <span>Product</span>
+                  <span className="text-center">Qty</span>
+                  <span className="text-right">Price</span>
+                  <span className="text-right">Discount</span>
+                  <span className="text-right">Subtotal</span>
+                  <span></span>
+                </div>
+                {editItems.length === 0 ? (
+                  <div className="text-center text-muted-foreground py-6 text-sm">
+                    No items. Add products below.
+                  </div>
+                ) : (
+                  editItems.map((item, idx) => (
+                    <div
+                      key={item.productId}
+                      className="grid grid-cols-[1fr_80px_100px_90px_80px_40px] gap-2 px-3 py-2 items-center border-t border-border/30 hover:bg-muted/20 transition-colors"
+                    >
+                      <div>
+                        <p className="text-sm font-medium truncate">{item.productName}</p>
+                        <p className="text-[10px] text-muted-foreground font-mono">{item.productSku}</p>
+                      </div>
+                      <div className="flex items-center justify-center gap-1">
+                        <button
+                          className="w-6 h-6 rounded bg-muted hover:bg-muted/80 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
+                          onClick={() =>
+                            setEditItems((prev) =>
+                              prev.map((i) =>
+                                i.productId === item.productId && i.quantity > 1
+                                  ? { ...i, quantity: i.quantity - 1 }
+                                  : i
+                              )
+                            )
+                          }
+                        >
+                          <Minus className="w-3 h-3" />
+                        </button>
+                        <Input
+                          type="number"
+                          min={1}
+                          value={item.quantity}
+                          onChange={(e) => {
+                            const val = parseInt(e.target.value) || 1;
+                            setEditItems((prev) =>
+                              prev.map((i) =>
+                                i.productId === item.productId ? { ...i, quantity: Math.max(1, val) } : i
+                              )
+                            );
+                          }}
+                          className="w-12 h-7 text-center text-xs p-0 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                        />
+                        <button
+                          className="w-6 h-6 rounded bg-muted hover:bg-muted/80 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
+                          onClick={() =>
+                            setEditItems((prev) =>
+                              prev.map((i) =>
+                                i.productId === item.productId ? { ...i, quantity: i.quantity + 1 } : i
+                              )
+                            )
+                          }
+                        >
+                          <Plus className="w-3 h-3" />
+                        </button>
+                      </div>
+                      <Input
+                        type="number"
+                        min={0}
+                        step={1}
+                        value={item.unitPrice}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value) || 0;
+                          setEditItems((prev) =>
+                            prev.map((i) =>
+                              i.productId === item.productId ? { ...i, unitPrice: Math.max(0, val) } : i
+                            )
+                          );
+                        }}
+                        className="h-7 text-xs text-right [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                      />
+                      <Input
+                        type="number"
+                        min={0}
+                        step={1}
+                        value={item.discountAmount}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value) || 0;
+                          setEditItems((prev) =>
+                            prev.map((i) =>
+                              i.productId === item.productId ? { ...i, discountAmount: Math.max(0, val) } : i
+                            )
+                          );
+                        }}
+                        className="h-7 text-xs text-right [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                      />
+                      <span className="text-xs font-medium text-right">
+                        {formatPKR(item.unitPrice * item.quantity - item.discountAmount)}
+                      </span>
+                      <button
+                        className="w-7 h-7 rounded flex items-center justify-center text-destructive/70 hover:text-destructive hover:bg-destructive/10 transition-colors"
+                        onClick={() =>
+                          setEditItems((prev) =>
+                            prev.filter((i) => i.productId !== item.productId)
+                          )
+                        }
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
             </div>
-            <div className="space-y-2">
-              <Label>Client Phone</Label>
-              <Input 
-                value={editClientPhone} 
-                onChange={(e) => setEditClientPhone(e.target.value)} 
-                placeholder="Enter client phone" 
+
+            {/* Add Product */}
+            <div className="relative">
+              <Label className="text-sm font-semibold mb-1 block">Add Product</Label>
+              <Input
+                value={editProductSearch}
+                onChange={(e) => setEditProductSearch(e.target.value)}
+                placeholder="Search products to add..."
+                className="h-9 text-sm"
               />
+              {editFilteredProducts.length > 0 && (
+                <div className="absolute z-10 mt-1 w-full bg-popover border border-border rounded-lg shadow-lg overflow-hidden">
+                  {editFilteredProducts.map((product) => (
+                    <button
+                      key={product.id}
+                      className="w-full text-left px-3 py-2 hover:bg-muted/50 flex items-center justify-between text-sm transition-colors"
+                      onClick={() => handleAddProductToEdit(product)}
+                    >
+                      <div>
+                        <span className="font-medium">{product.name}</span>
+                        <span className="text-muted-foreground ml-2 text-xs">({product.sku})</span>
+                      </div>
+                      <span className="text-xs font-mono">{formatPKR(product.sellingPrice)}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
+
+            {/* Client Info & Payment */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label className="text-xs">Select Customer (Optional)</Label>
+                <Select
+                  value={editCustomerId}
+                  onValueChange={(val) => {
+                    setEditCustomerId(val);
+                    const customer = getCustomerById(val);
+                    if (customer) {
+                      setEditClientName(customer.name);
+                      setEditClientPhone(customer.phone);
+                    }
+                  }}
+                >
+                  <SelectTrigger className="h-9 text-sm">
+                    <SelectValue placeholder="Search or select a customer" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">--- Clear Selection ---</SelectItem>
+                    {customers.map((c) => (
+                      <SelectItem key={c.id} value={c.id}>
+                        <div className="flex items-center gap-2">
+                          <User className="w-3.5 h-3.5 text-muted-foreground" />
+                          <span>{c.name}</span>
+                          <span className="text-[10px] text-muted-foreground">({c.phone})</span>
+                        </div>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Payment Method</Label>
+                <select
+                  value={editPaymentMethod}
+                  onChange={(e) => setEditPaymentMethod(e.target.value)}
+                  className="w-full h-9 text-sm rounded-md border border-input bg-background px-3 py-1 text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+                >
+                  <option value="cash">Cash</option>
+                  <option value="card">Card</option>
+                  <option value="transfer">Transfer</option>
+                  <option value="credit">Credit</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label className="text-xs">Client Name</Label>
+                <Input
+                  value={editClientName}
+                  onChange={(e) => setEditClientName(e.target.value)}
+                  placeholder="Client name"
+                  className="h-9 text-sm"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Client Phone</Label>
+                <Input
+                  value={editClientPhone}
+                  onChange={(e) => setEditClientPhone(e.target.value)}
+                  placeholder="Client phone"
+                  className="h-9 text-sm"
+                />
+              </div>
+            </div>
+
+            {/* Totals Preview */}
+            <div className="bg-muted/30 rounded-lg p-3 border border-border/50">
+              <div className="grid grid-cols-2 gap-1 text-sm">
+                <span className="text-muted-foreground">Subtotal</span>
+                <span className="text-right font-medium">{formatPKR(editSubtotal)}</span>
+                {settings.taxRate > 0 && (
+                  <>
+                    <span className="text-muted-foreground">Tax ({settings.taxRate}%)</span>
+                    <span className="text-right font-medium">{formatPKR(editTax)}</span>
+                  </>
+                )}
+                {editCardFee > 0 && (
+                  <>
+                    <span className="text-muted-foreground">Card Fee ({editCardFeeRate}%)</span>
+                    <span className="text-right font-medium">{formatPKR(editCardFee)}</span>
+                  </>
+                )}
+                <Separator className="col-span-2 my-1" />
+                <span className="font-bold">Total</span>
+                <span className="text-right font-bold text-primary text-lg">{formatPKR(editTotal)}</span>
+              </div>
+            </div>
+
+            {/* Edit History */}
+            {selectedOrder && (
+              <div>
+                <button
+                  className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 mb-2 transition-colors"
+                  onClick={() => setShowEditHistory(!showEditHistory)}
+                >
+                  <History className="w-3.5 h-3.5" />
+                  {showEditHistory ? 'Hide' : 'Show'} Edit History
+                </button>
+                {showEditHistory && (() => {
+                  const logs = getOrderEditLogs(selectedOrder.id);
+                  if (logs.length === 0) {
+                    return (
+                      <div className="text-xs text-muted-foreground bg-muted/20 rounded-lg p-3 border border-border/30">
+                        No edits have been made to this bill.
+                      </div>
+                    );
+                  }
+                  return (
+                    <div className="space-y-2 max-h-40 overflow-auto">
+                      {logs.map((log) => (
+                        <div key={log.id} className="text-xs bg-muted/20 rounded-lg p-3 border border-border/30">
+                          <div className="flex justify-between items-center mb-1">
+                            <span className="font-medium text-foreground">{log.editedBy}</span>
+                            <span className="text-muted-foreground">
+                              {format(new Date(log.editedAt), 'MMM dd, HH:mm')}
+                            </span>
+                          </div>
+                          <p className="text-muted-foreground leading-relaxed">{log.changesSummary}</p>
+                          <p className="text-muted-foreground/70 mt-1">
+                            Previous total: {formatPKR(log.previousOrder.totalAmount || 0)}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
           </div>
-          <div className="flex justify-end gap-2">
+
+          {/* Footer Actions */}
+          <div className="flex justify-end gap-2 pt-3 border-t border-border/50">
             <Button variant="outline" onClick={() => setIsEditBillDialogOpen(false)}>Cancel</Button>
-            <Button onClick={handleSaveBillEdit}>Save Changes</Button>
+            <Button onClick={handleSaveBillEdit} disabled={editItems.length === 0}>
+              Save Changes
+            </Button>
           </div>
         </DialogContent>
       </Dialog>
