@@ -16,36 +16,46 @@ export interface AuthContextType {
   deleteUser: (email: string) => boolean;
 }
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
+function withTimeout<T>(promise: PromiseLike<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
   return Promise.race([
-    promise,
+    Promise.resolve(promise),
     new Promise<T>((_, reject) => {
       window.setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
     }),
   ]);
 }
 
-const SESSION_REQUEST_TIMEOUT_MS = 3000;
-const PROFILE_REQUEST_TIMEOUT_MS = 3000;
-const LOGIN_REQUEST_TIMEOUT_MS = 5000;
+const SESSION_REQUEST_TIMEOUT_MS = 15000;
+const PROFILE_REQUEST_TIMEOUT_MS = 10000;
+
+type UserRoleRow = {
+  role?: string | null;
+  full_name?: string | null;
+  fullName?: string | null;
+  name?: string | null;
+  email?: string | null;
+  user_id?: string | null;
+  userId?: string | null;
+};
+
+function normalizeUserRole(role: string | null | undefined): UserRole {
+  const normalized = (role || '').trim().toLowerCase();
+  if (normalized === 'admin') return 'admin';
+  if (normalized === 'frontdesk') return 'frontdesk';
+  return 'cashier';
+}
+
+function resolveDisplayName(row: UserRoleRow | null, fallbackEmail: string): string {
+  return row?.full_name || row?.fullName || row?.name || fallbackEmail.split('@')[0];
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [dbUsers, setDbUsers] = useState<UserCredentials[]>([]);
-  const hasLoggedInitTimeout = useRef(false);
-  const hasLoggedSessionTimeout = useRef(false);
   const hasLoggedProfileTimeout = useRef(false);
 
   useEffect(() => {
-    const initTimeout = window.setTimeout(() => {
-      if (!hasLoggedInitTimeout.current) {
-        console.warn('Auth initialization timed out. Continuing without blocking UI.');
-        hasLoggedInitTimeout.current = true;
-      }
-      setIsLoading(false);
-    }, 6000);
-
     // Check active sessions and sets the user
     const checkSession = async () => {
       setIsLoading(true);
@@ -71,18 +81,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setIsLoading(false);
         }
       } catch (err) {
-        const message = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
-        if (message.includes('timed out')) {
-          if (!hasLoggedSessionTimeout.current) {
-            console.warn('Auth session check timed out. Showing UI without blocking.');
-            hasLoggedSessionTimeout.current = true;
-          }
-        } else {
-          console.error("Failed to check session. Check network or Supabase URL:", err);
-        }
+        const message = err instanceof Error ? err.message : String(err);
+        console.error("Failed to check session. Check network or Supabase URL:", message);
         setIsLoading(false);
-      } finally {
-        window.clearTimeout(initTimeout);
       }
     };
     
@@ -99,60 +100,100 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
 
     return () => {
-      window.clearTimeout(initTimeout);
       subscription.unsubscribe();
     };
   }, []);
 
   const loadUserProfile = async (userId: string, email: string) => {
     try {
-      // Get user role from our new table
-      const { data: roleData, error } = await withTimeout(
+      // Primary lookup by authenticated user id
+      const { data: roleByUserId, error: byUserIdError } = await withTimeout(
         supabase
           .from('user_roles')
-          .select('role, full_name')
+          .select('*')
           .eq('user_id', userId)
-          .single(),
+          .maybeSingle(),
         PROFILE_REQUEST_TIMEOUT_MS,
-        'User profile request timed out'
+        'User role query by user_id timed out'
       );
 
-      if (error) {
-        const message = (error.message || '').toLowerCase();
+      let resolvedRoleRow: UserRoleRow | null = (roleByUserId as UserRoleRow | null) || null;
+
+      // Fallback lookup by email in case existing rows were inserted without correct user_id mapping
+      if (!resolvedRoleRow) {
+        const { data: roleByEmail, error: byEmailError } = await withTimeout(
+          supabase
+            .from('user_roles')
+            .select('*')
+            .eq('email', email)
+            .maybeSingle(),
+          PROFILE_REQUEST_TIMEOUT_MS,
+          'User role query by email timed out'
+        );
+
+        if (byEmailError) {
+          const message = (byEmailError.message || '').toLowerCase();
+          const isSchemaOrServerIssue =
+            message.includes('schema cache') ||
+            message.includes('could not find the table') ||
+            message.includes('relation') ||
+            !!byEmailError.code?.startsWith('5');
+
+          if (isSchemaOrServerIssue) {
+            console.warn('User roles table is unavailable. Falling back to cashier role.');
+          } else {
+            console.error('Failed to fetch user role by email fallback:', byEmailError);
+          }
+
+          setUser({
+            id: userId,
+            email,
+            fullName: email.split('@')[0],
+            role: 'cashier',
+          });
+          return;
+        }
+
+        resolvedRoleRow = (roleByEmail as UserRoleRow | null) || null;
+      }
+
+      if (byUserIdError) {
+        const message = (byUserIdError.message || '').toLowerCase();
         const isSchemaOrServerIssue =
           message.includes('schema cache') ||
           message.includes('could not find the table') ||
           message.includes('relation') ||
-          !!error.code?.startsWith('5');
+          !!byUserIdError.code?.startsWith('5');
 
         if (isSchemaOrServerIssue) {
           console.warn('User roles table is unavailable. Falling back to cashier role.');
         } else {
-          console.error('Failed to fetch user role:', error);
+          console.error('Failed to fetch user role by user_id:', byUserIdError);
         }
 
         setUser({
           id: userId,
-          email: email,
+          email,
           fullName: email.split('@')[0],
           role: 'cashier',
         });
         return;
       }
 
-      if (roleData) {
+      if (resolvedRoleRow) {
+        const resolvedRole = normalizeUserRole(resolvedRoleRow.role);
         setUser({
           id: userId,
-          email: email,
-          fullName: roleData.full_name || email.split('@')[0],
-          role: roleData.role as UserRole,
+          email,
+          fullName: resolveDisplayName(resolvedRoleRow, email),
+          role: resolvedRole,
         });
-        if (roleData.role === 'admin') fetchAllUsers();
+        if (resolvedRole === 'admin') fetchAllUsers();
       } else {
-        // Fallback if role missing
+        console.warn('No role row found in user_roles for this login. Falling back to cashier role.');
         setUser({
           id: userId,
-          email: email,
+          email,
           fullName: email.split('@')[0],
           role: 'cashier',
         });
@@ -198,28 +239,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = async (email: string, password: string): Promise<boolean> => {
     setIsLoading(true);
     try {
-      const { data, error } = await withTimeout(
-        supabase.auth.signInWithPassword({
-          email,
-          password,
-        }),
-        LOGIN_REQUEST_TIMEOUT_MS,
-        'Login request timed out'
-      );
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
 
       if (error) {
         toast.error(error.message);
         return false;
       }
 
-      // Optimistic local user so route transition is immediate.
+      // Resolve role from user_roles immediately after auth to avoid temporary cashier role.
       if (data?.user) {
-        setUser({
-          id: data.user.id,
-          email: data.user.email || email,
-          fullName: (data.user.email || email).split('@')[0],
-          role: 'cashier',
-        });
+        await loadUserProfile(data.user.id, data.user.email || email);
+      } else {
+        toast.error('Login succeeded but no user session was returned.');
+        return false;
       }
 
       return true;
@@ -239,8 +274,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       if (isNetworkError) {
         toast.error('Unable to reach Supabase. Verify VITE_SUPABASE_URL and your internet connection.');
-      } else if (message.includes('timed out')) {
-        toast.error('Login timed out. Please try again.');
       } else {
         toast.error('Login failed. Please try again.');
       }
