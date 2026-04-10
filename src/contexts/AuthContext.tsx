@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, ReactNode } from 'react';
 import { User, UserRole, UserCredentials } from '@/types/pos';
+import type { User as SupabaseAuthUser } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
 import { toast } from 'sonner';
 import { AuthContext } from './AuthContextValue';
@@ -77,9 +78,16 @@ function resolveDisplayName(row: UserRoleRow | null, fallbackEmail: string): str
   return row?.full_name || row?.fullName || row?.name || fallbackEmail.split('@')[0];
 }
 
-// ============================================================
-// Provider
-// ============================================================
+function resolveDisplayNameFromAuthUser(authUser: SupabaseAuthUser | null, fallbackEmail: string): string {
+  const metadata = authUser?.user_metadata || {};
+  return (
+    metadata.full_name ||
+    metadata.fullName ||
+    metadata.name ||
+    metadata.display_name ||
+    fallbackEmail.split('@')[0]
+  );
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
@@ -128,10 +136,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         }
 
         if (session?.user) {
-          await loadUserProfile(session.user.id, session.user.email!);
-          if (session.user.role === 'admin') {
-            await fetchAllUsers();
-          }
+          await loadUserProfile(session.user.id, session.user.email!, session.user);
         } else {
           setIsLoading(false);
         }
@@ -146,7 +151,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
       if (session?.user) {
-        await loadUserProfile(session.user.id, session.user.email!);
+        await loadUserProfile(session.user.id, session.user.email!, session.user);
       } else {
         setUser(null);
         setIsLoading(false);
@@ -158,16 +163,38 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  // ----------------------------------------------------------
-  // Supabase profile helpers
-  // ----------------------------------------------------------
-  const loadUserProfile = async (userId: string, email: string) => {
+  const loadUserProfile = async (userId: string, email: string, authUser: SupabaseAuthUser | null = null) => {
     try {
       const { data: roleByUserId, error: byUserIdError } = await withTimeout(
         supabase.from('user_roles').select('*').eq('user_id', userId).maybeSingle(),
         PROFILE_REQUEST_TIMEOUT_MS,
         'User role query by user_id timed out'
       );
+
+      if (byUserIdError) {
+        const message = (byUserIdError.message || '').toLowerCase();
+        const isSchemaOrServerIssue =
+          message.includes('schema cache') ||
+          message.includes('could not find the table') ||
+          message.includes('relation') ||
+          !!byUserIdError.code?.startsWith('5');
+
+        if (isSchemaOrServerIssue) {
+          console.warn('User roles table is unavailable. Falling back to cashier role.');
+          toast.warning('User roles table not found. Defaulting to Cashier. Run SUPABASE_SETUP.sql (including user_roles).');
+        } else {
+          console.error('Failed to fetch user role by user_id:', byUserIdError);
+          toast.warning('Could not load your role. Defaulting to Cashier. Check RLS + user_roles row.');
+        }
+
+        setUser({
+          id: userId,
+          email,
+          fullName: resolveDisplayNameFromAuthUser(authUser, email),
+          role: 'cashier',
+        });
+        return;
+      }
 
       let resolvedRoleRow: UserRoleRow | null = (roleByUserId as UserRoleRow | null) || null;
 
@@ -188,34 +215,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
           if (isSchemaOrServerIssue) {
             console.warn('User roles table is unavailable. Falling back to cashier role.');
+            toast.warning('User roles table not found. Defaulting to Cashier. Run SUPABASE_SETUP.sql (including user_roles).');
           } else {
             console.error('Failed to fetch user role by email fallback:', byEmailError);
+            toast.warning('Could not load your role. Defaulting to Cashier. Check RLS + user_roles row.');
           }
 
-          setUser({ id: userId, email, fullName: email.split('@')[0], role: 'cashier' });
+          setUser({
+            id: userId,
+            email,
+            fullName: email.split('@')[0],
+            role: 'cashier',
+          });
           return;
         }
 
         resolvedRoleRow = (roleByEmail as UserRoleRow | null) || null;
       }
 
-      if (byUserIdError) {
-        const message = (byUserIdError.message || '').toLowerCase();
-        const isSchemaOrServerIssue =
-          message.includes('schema cache') ||
-          message.includes('could not find the table') ||
-          message.includes('relation') ||
-          !!byUserIdError.code?.startsWith('5');
-
-        if (isSchemaOrServerIssue) {
-          console.warn('User roles table is unavailable. Falling back to cashier role.');
-        } else {
-          console.error('Failed to fetch user role by user_id:', byUserIdError);
-        }
-
-        setUser({ id: userId, email, fullName: email.split('@')[0], role: 'cashier' });
-        return;
-      }
 
       if (resolvedRoleRow) {
         const resolvedRole = normalizeUserRole(resolvedRoleRow.role);
@@ -228,7 +245,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (resolvedRole === 'admin') fetchAllUsers();
       } else {
         console.warn('No role row found in user_roles for this login. Falling back to cashier role.');
-        setUser({ id: userId, email, fullName: email.split('@')[0], role: 'cashier' });
+        setUser({
+          id: userId,
+          email,
+          fullName: email.split('@')[0],
+          role: 'cashier',
+        });
       }
     } catch (err) {
       const message = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
@@ -240,7 +262,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       } else {
         console.error("Failed to load user profile:", err);
       }
-      setUser({ id: userId, email, fullName: email.split('@')[0], role: 'cashier' });
+      // Fallback if request fails (e.g., DNS error after successfully caching session)
+      setUser({
+        id: userId,
+        email: email,
+        fullName: email.split('@')[0],
+        role: 'cashier',
+      });
     } finally {
       setIsLoading(false);
     }
@@ -303,7 +331,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       if (data?.user) {
-        await loadUserProfile(data.user.id, data.user.email || email);
+        await loadUserProfile(data.user.id, data.user.email || email, data.user);
       } else {
         toast.error('Login succeeded but no user session was returned.');
         return false;

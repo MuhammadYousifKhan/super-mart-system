@@ -1,5 +1,7 @@
 -- Enable UUID extension
 create extension if not exists "uuid-ossp";
+-- Needed for gen_random_uuid()
+create extension if not exists "pgcrypto";
 
 -- Categories Table
 create table public.categories (
@@ -267,11 +269,40 @@ create table if not exists public.user_roles (
 );
 
 alter table public.user_roles enable row level security;
--- Admins can read/write all roles, users can read their own
-create policy "Users can read their own role" on public.user_roles for select using (auth.uid() = user_id);
-create policy "Admins can read all roles" on public.user_roles for select using (
-  (select role from public.user_roles where user_id = auth.uid()) = 'admin'
-);
+-- Admins can read all roles, users can read their own
+-- Use helper function to avoid potential policy recursion.
+create or replace function public.is_admin()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists(
+    select 1
+    from public.user_roles
+    where user_id = auth.uid()
+      and role = 'admin'
+  );
+$$;
+
+drop policy if exists "Users can read their own role" on public.user_roles;
+drop policy if exists "Users can read role by email" on public.user_roles;
+drop policy if exists "Admins can read all roles" on public.user_roles;
+
+create policy "Users can read their own role" on public.user_roles
+  for select
+  using (auth.uid() = user_id);
+
+-- Allows a user to read their own role row even if user_id mapping was inserted incorrectly,
+-- without allowing reading other users' roles.
+create policy "Users can read role by email" on public.user_roles
+  for select
+  using (email = (auth.jwt() ->> 'email'));
+
+create policy "Admins can read all roles" on public.user_roles
+  for select
+  using (public.is_admin());
 
 -- Secure policies for production (Optional: replace the public policies above with these)
 -- For example:
