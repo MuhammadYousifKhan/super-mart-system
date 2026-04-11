@@ -357,7 +357,7 @@ export function ReceiveSupplierStockModal({
               <Input
                 value={invoiceNumber}
                 onChange={(e) => setInvoiceNumber(e.target.value)}
-                placeholder="INV-1001"
+                placeholder="Leave blank to auto-generate"
               />
             </div>
             <div className="space-y-2">

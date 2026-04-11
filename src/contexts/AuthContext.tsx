@@ -290,11 +290,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       if (session?.user) {
         const existingUser = currentUserRef.current;
-        if (event === 'TOKEN_REFRESHED' && existingUser?.id === session.user.id) {
-          return;
+        
+        // Only trigger global loading if we don't have a user yet, or if the user changed.
+        // This prevents the "blank screen" blink on tab focus/background refresh.
+        const isNewUserOrLogin = !existingUser || existingUser.id !== session.user.id;
+        
+        if (isNewUserOrLogin) {
+          setIsLoading(true);
         }
-
-        setIsLoading(true);
+        
         await loadUserProfile(session.user.id, session.user.email!, session.user);
       } else {
         setUser(null);

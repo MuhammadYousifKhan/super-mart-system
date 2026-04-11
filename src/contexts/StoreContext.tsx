@@ -171,6 +171,7 @@ type PendingSyncOperationType =
   | 'supplier_update'
   | 'supplier_delete'
   | 'supplier_purchase_add'
+  | 'supplier_payment_add'
   | 'supplier_stock_receive'
   | 'supplier_stock_receive_batch'
   | 'supplier_schedule_add'
@@ -599,6 +600,25 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         return;
       }
 
+      case 'supplier_payment_add': {
+        const payload = op.payload as { purchase: SupplierPurchase };
+        const p = payload.purchase;
+        const { error } = await supabase.from('supplier_purchases').upsert(
+          {
+            id: p.id,
+            supplier_id: p.supplierId,
+            description: p.description,
+            amount: p.amount,
+            purchase_date: p.purchaseDate,
+            invoice_number: p.invoiceNumber,
+            created_at: p.createdAt,
+          },
+          { onConflict: 'id' }
+        );
+        if (error) throw error;
+        return;
+      }
+
       case 'supplier_stock_receive': {
         const payload = op.payload as {
           productId: string;
@@ -645,7 +665,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
       case 'supplier_stock_receive_batch': {
         const payload = op.payload as {
-          productUpdates: Array<{ productId: string; newStockQuantity: number; newCostPrice: number }>;
+          productUpdates?: Array<{ productId: string; newStockQuantity: number; newCostPrice: number }>;
+          productUpserts?: Product[];
           purchases: SupplierPurchase[];
           supplierId: string;
           newTotalPurchased: number;
@@ -653,15 +674,41 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           newBalance: number;
         };
 
-        const productPromises = payload.productUpdates.map((item) =>
-          supabase
-            .from('products')
-            .update({
-              stock_quantity: item.newStockQuantity,
-              cost_price: item.newCostPrice,
-            })
-            .eq('id', item.productId)
-        );
+        const productPromises: Array<ReturnType<typeof supabase.from>> = [];
+        if (payload.productUpserts && payload.productUpserts.length > 0) {
+          productPromises.push(
+            supabase.from('products').upsert(
+              payload.productUpserts.map((p) => ({
+                id: p.id,
+                sku: p.sku,
+                name: p.name,
+                description: p.description,
+                category_id: p.categoryId,
+                unit_id: p.unitId,
+                cost_price: p.costPrice,
+                selling_price: p.sellingPrice,
+                stock_quantity: p.stockQuantity,
+                low_stock_threshold: p.lowStockThreshold,
+                expiry_date: p.expiryDate,
+                barcode: p.barcode,
+                barcode_enabled: p.barcodeEnabled,
+              })),
+              { onConflict: 'id' }
+            )
+          );
+        } else if (payload.productUpdates && payload.productUpdates.length > 0) {
+          for (const item of payload.productUpdates) {
+            productPromises.push(
+              supabase
+                .from('products')
+                .update({
+                  stock_quantity: item.newStockQuantity,
+                  cost_price: item.newCostPrice,
+                })
+                .eq('id', item.productId)
+            );
+          }
+        }
 
         const [purchaseResult, supplierResult, ...productResults] = await Promise.all([
           supabase.from('supplier_purchases').upsert(
@@ -2511,9 +2558,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const purchaseDate = input.purchaseDate || new Date().toISOString().slice(0, 10);
     const createdAt = new Date().toISOString();
 
+    const resolvedInvoiceNumber = input.invoiceNumber?.trim()
+      ? input.invoiceNumber.trim()
+      : `INV-${purchaseDate.replace(/-/g, '')}-${Date.now().toString().slice(-6)}`;
+
     const productsToUpdate = [...products];
-    const purchases: SupplierPurchase[] = [];
     let totalPurchaseAmount = 0;
+
+    const itemSummaries: string[] = [];
 
     // Track which products actually changed for Supabase sync
     const changedProductIds = new Set<string>();
@@ -2565,6 +2617,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       const amount = Number((resolvedUnitCost * quantity).toFixed(2));
       totalPurchaseAmount += amount;
 
+      itemSummaries.push(`${originalProduct.name} x${quantity}`);
+
       // Update the target product
       const targetIndex = productsToUpdate.findIndex(p => p.id === targetProduct!.id);
       productsToUpdate[targetIndex] = {
@@ -2575,18 +2629,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       
       changedProductIds.add(productsToUpdate[targetIndex].id);
 
-      purchases.push({
-        id: generateId(),
-        supplierId: supplier.id,
-        description:
-          item.note?.trim() ||
-          input.note?.trim() ||
-          `Stock received: ${targetProduct.name} [${targetProduct.sku}] x${quantity} @ ${resolvedUnitCost.toFixed(2)}`,
-        amount,
-        purchaseDate,
-        invoiceNumber: input.invoiceNumber,
-        createdAt,
-      });
     }
 
     const paidAmount = Number((input.paidAmount ?? 0).toFixed(2));
@@ -2603,9 +2645,35 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const newTotalPaid = Number((supplier.totalPaid + paidAmount).toFixed(2));
     const newBalance = Number((newTotalPurchased - newTotalPaid).toFixed(2));
 
+    const invoicePurchase: SupplierPurchase = {
+      id: generateId(),
+      supplierId: supplier.id,
+      description:
+        input.note?.trim() ||
+        `Stock intake (${input.items.length} item${input.items.length === 1 ? '' : 's'}): ${itemSummaries.join(', ')}`,
+      amount: Number(totalPurchaseAmount.toFixed(2)),
+      purchaseDate,
+      invoiceNumber: resolvedInvoiceNumber,
+      createdAt,
+    };
+
+    const paymentPurchase: SupplierPurchase | null = paidAmount > 0
+      ? {
+          id: generateId(),
+          supplierId: supplier.id,
+          description: `Payment received${resolvedInvoiceNumber ? ` for invoice ${resolvedInvoiceNumber}` : ''}`,
+          amount: Number((-paidAmount).toFixed(2)),
+          purchaseDate,
+          invoiceNumber: resolvedInvoiceNumber,
+          createdAt,
+        }
+      : null;
+
+    const ledgerEntries = paymentPurchase ? [invoicePurchase, paymentPurchase] : [invoicePurchase];
+
     // Optimistic Update
     setProducts(productsToUpdate);
-    setSupplierPurchases((prev) => [...purchases, ...prev]);
+    setSupplierPurchases((prev) => [...ledgerEntries, ...prev]);
     setSuppliers((prev) =>
       prev.map((s) =>
         s.id === supplier.id
@@ -2619,60 +2687,90 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       )
     );
 
-    // Persist to Supabase
+    // Persist to Supabase (enqueue on failure for durability)
     if (import.meta.env.VITE_SUPABASE_URL) {
-      // 1. Sync Products (Upsert because some are new batches)
-      const productsToSync = productsToUpdate.filter(p => changedProductIds.has(p.id));
-      const productPromises = productsToSync.map(p => 
-        supabase.from('products').upsert({
-          id: p.id,
-          sku: p.sku,
-          name: p.name,
-          description: p.description,
-          category_id: p.categoryId,
-          unit_id: p.unitId,
-          cost_price: p.costPrice,
-          selling_price: p.sellingPrice,
-          stock_quantity: p.stockQuantity,
-          low_stock_threshold: p.lowStockThreshold,
-          expiry_date: p.expiryDate,
-          barcode: p.barcode,
-          barcode_enabled: p.barcodeEnabled
-        })
-      );
+      const productsToSync = productsToUpdate.filter((p) => changedProductIds.has(p.id));
 
-      // 2. Sync Purchases & Supplier
-      void Promise.all([
-        supabase.from('supplier_purchases').insert(
-          purchases.map((purchase) => ({
-            id: purchase.id,
-            supplier_id: purchase.supplierId,
-            description: purchase.description,
-            amount: purchase.amount,
-            purchase_date: purchase.purchaseDate,
-            invoice_number: purchase.invoiceNumber,
-            created_at: purchase.createdAt,
-          }))
-        ),
-        supabase
-          .from('suppliers')
-          .update({
-            total_purchased: newTotalPurchased,
-            total_paid: newTotalPaid,
-            balance: newBalance,
-          })
-          .eq('id', supplier.id),
-        ...productPromises,
-      ]).then(([purchaseResult, supplierResult, ...productResults]) => {
-        const firstError = [purchaseResult, supplierResult, ...productResults].find(r => r.error)?.error;
-        if (firstError) {
-          console.error('Supabase sync error:', firstError);
-          // In a complex batch, we normally enqueue a sync, but for simplicity here we just log
-          toast.error('Error syncing to database, but local state is updated');
-        } else {
-          toast.success('Stock intake saved and synced');
+      try {
+        const ops: Array<PromiseLike<{ error: any }>> = [];
+
+        if (productsToSync.length > 0) {
+          ops.push(
+            supabase.from('products').upsert(
+              productsToSync.map((p) => ({
+                id: p.id,
+                sku: p.sku,
+                name: p.name,
+                description: p.description,
+                category_id: p.categoryId,
+                unit_id: p.unitId,
+                cost_price: p.costPrice,
+                selling_price: p.sellingPrice,
+                stock_quantity: p.stockQuantity,
+                low_stock_threshold: p.lowStockThreshold,
+                expiry_date: p.expiryDate,
+                barcode: p.barcode,
+                barcode_enabled: p.barcodeEnabled,
+              })),
+              { onConflict: 'id' }
+            )
+          );
         }
-      });
+
+        ops.push(
+          supabase.from('supplier_purchases').upsert(
+            ledgerEntries.map((purchase) => ({
+              id: purchase.id,
+              supplier_id: purchase.supplierId,
+              description: purchase.description,
+              amount: purchase.amount,
+              purchase_date: purchase.purchaseDate,
+              invoice_number: purchase.invoiceNumber,
+              created_at: purchase.createdAt,
+            })),
+            { onConflict: 'id' }
+          )
+        );
+
+        ops.push(
+          supabase
+            .from('suppliers')
+            .update({
+              total_purchased: newTotalPurchased,
+              total_paid: newTotalPaid,
+              balance: newBalance,
+            })
+            .eq('id', supplier.id)
+        );
+
+        const results = await Promise.all(ops);
+        const firstError = results.find((r) => r.error)?.error;
+        if (firstError) throw firstError;
+
+        toast.success(`Stock intake saved (Invoice: ${resolvedInvoiceNumber})`);
+      } catch (error) {
+        const errorMessage =
+          error instanceof Error
+            ? error.message
+            : typeof error === 'string'
+              ? error
+              : JSON.stringify(error);
+
+        enqueuePendingSync(
+          'supplier_stock_receive_batch',
+          {
+            productUpserts: productsToSync,
+            purchases: ledgerEntries,
+            supplierId: supplier.id,
+            newTotalPurchased,
+            newTotalPaid,
+            newBalance,
+          },
+          errorMessage
+        );
+      }
+    } else {
+      toast.success(`Stock intake saved (Invoice: ${resolvedInvoiceNumber})`);
     }
   };
 
@@ -2798,10 +2896,43 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     if (supplier) {
       const newTotalPaid = supplier.totalPaid + schedule.amount;
       const newBalance = supplier.totalPurchased - newTotalPaid;
+
+      const createdAt = new Date().toISOString();
+      const paymentDate = createdAt.slice(0, 10);
+      const paymentEntry: SupplierPurchase = {
+        id: generateId(),
+        supplierId: supplier.id,
+        description: schedule.note?.trim() || `Payment received (schedule: ${schedule.frequency})`,
+        amount: Number((-schedule.amount).toFixed(2)),
+        purchaseDate: paymentDate,
+        createdAt,
+      };
+
+      setSupplierPurchases((prev) => [paymentEntry, ...prev]);
+
       updateSupplier(supplier.id, {
         totalPaid: newTotalPaid,
         balance: newBalance,
       });
+
+      if (import.meta.env.VITE_SUPABASE_URL) {
+        void supabase
+          .from('supplier_purchases')
+          .insert({
+            id: paymentEntry.id,
+            supplier_id: paymentEntry.supplierId,
+            description: paymentEntry.description,
+            amount: paymentEntry.amount,
+            purchase_date: paymentEntry.purchaseDate,
+            invoice_number: paymentEntry.invoiceNumber,
+            created_at: paymentEntry.createdAt,
+          })
+          .then(({ error }) => {
+            if (error) {
+              enqueuePendingSync('supplier_payment_add', { purchase: paymentEntry }, error.message);
+            }
+          });
+      }
     }
 
     updateSupplierPaymentSchedule(id, {

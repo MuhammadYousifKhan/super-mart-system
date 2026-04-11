@@ -289,7 +289,7 @@ export default function Suppliers() {
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
           <TabsTrigger value="records">Supplier Records</TabsTrigger>
-          <TabsTrigger value="purchases">Purchase Entries</TabsTrigger>
+          <TabsTrigger value="purchases">Ledger</TabsTrigger>
           <TabsTrigger value="schedules">Payment Schedules</TabsTrigger>
           <TabsTrigger value="quality">Quality Checks</TabsTrigger>
         </TabsList>
@@ -400,7 +400,7 @@ export default function Suppliers() {
 
           <Card>
             <CardHeader>
-              <CardTitle>Purchase History</CardTitle>
+              <CardTitle>Ledger Entries</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
               <div className="space-y-2">
@@ -422,6 +422,7 @@ export default function Suppliers() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Date</TableHead>
+                      <TableHead>Type</TableHead>
                       <TableHead>Supplier</TableHead>
                       <TableHead>Description</TableHead>
                       <TableHead>Invoice</TableHead>
@@ -435,10 +436,15 @@ export default function Suppliers() {
                     ).map((purchase) => (
                       <TableRow key={purchase.id}>
                         <TableCell>{purchase.purchaseDate}</TableCell>
+                        <TableCell>
+                          <Badge variant={purchase.amount < 0 ? 'secondary' : 'outline'}>
+                            {purchase.amount < 0 ? 'Payment' : 'Invoice'}
+                          </Badge>
+                        </TableCell>
                         <TableCell>{getSupplierById(purchase.supplierId)?.name || '-'}</TableCell>
                         <TableCell>{purchase.description}</TableCell>
                         <TableCell>{purchase.invoiceNumber || '-'}</TableCell>
-                        <TableCell className="text-right">{formatPKR(purchase.amount)}</TableCell>
+                        <TableCell className="text-right">{formatPKR(Math.abs(purchase.amount))}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
