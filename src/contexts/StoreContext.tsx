@@ -782,6 +782,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   // Load data from Supabase
   useEffect(() => {
+    const loadData = <T,>(key: string, defaultValue: T): T => {
+      const saved = localStorage.getItem(key);
+      if (saved) {
+        try {
+          return JSON.parse(saved);
+        } catch {
+          return defaultValue;
+        }
+      }
+      return defaultValue;
+    };
+
     const fetchData = async () => {
       try {
         setLoading(true);
@@ -801,6 +813,21 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         
         if (categoriesError) throw categoriesError;
         if (categoriesData) setCategories(categoriesData);
+
+        // Fetch Units
+        const { data: unitsData, error: unitsError } = await supabase
+          .from('units')
+          .select('*');
+
+        if (unitsError) {
+          console.warn('Units not available yet:', unitsError.message);
+          setUnits(loadData('pos_units', SAMPLE_UNITS));
+        } else if (unitsData && unitsData.length > 0) {
+          setUnits(unitsData);
+        } else {
+          // If the table exists but is empty, fall back to locally stored/sample units
+          setUnits(loadData('pos_units', SAMPLE_UNITS));
+        }
 
         // Fetch Products
         const { data: productsData, error: productsError } = await supabase
@@ -1061,18 +1088,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     };
 
     const loadFromLocalStorage = () => {
-      const loadData = <T,>(key: string, defaultValue: T): T => {
-        const saved = localStorage.getItem(key);
-        if (saved) {
-          try {
-            return JSON.parse(saved);
-          } catch {
-            return defaultValue;
-          }
-        }
-        return defaultValue;
-      };
-
       setProducts(loadData('pos_products', SAMPLE_PRODUCTS));
       setUnits(loadData('pos_units', SAMPLE_UNITS));
       setCategories(loadData('pos_categories', SAMPLE_CATEGORIES));
@@ -1120,6 +1135,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     localStorage.setItem('pos_held_carts', JSON.stringify(heldCarts));
   }, [heldCarts]);
+
+  // Persist reference/inventory data locally as a durability fallback even when Supabase is configured.
+  // This prevents data loss on refresh if a Supabase table is missing/misconfigured.
+  useEffect(() => {
+    localStorage.setItem('pos_products', JSON.stringify(products));
+  }, [products]);
+
+  useEffect(() => {
+    localStorage.setItem('pos_units', JSON.stringify(units));
+  }, [units]);
+
+  useEffect(() => {
+    localStorage.setItem('pos_categories', JSON.stringify(categories));
+  }, [categories]);
 
   // Save customers to localStorage
   useEffect(() => {
@@ -1192,7 +1221,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     );
 
     if (import.meta.env.VITE_SUPABASE_URL) {
-      const dbUpdates: any = {};
+      const dbUpdates: Record<string, unknown> = {};
       if (updates.sku) dbUpdates.sku = updates.sku;
       if (updates.name) dbUpdates.name = updates.name;
       if (updates.description) dbUpdates.description = updates.description;
@@ -1206,6 +1235,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       if (updates.barcode !== undefined) dbUpdates.barcode = updates.barcode || null;
       if (updates.barcodeEnabled !== undefined) dbUpdates.barcode_enabled = updates.barcodeEnabled;
 
+      // Avoid a DB call with an empty update payload (can cause a 400 in PostgREST).
+      if (Object.keys(dbUpdates).length === 0) {
+        return;
+      }
+
       const { error } = await supabase
         .from('products')
         .update(dbUpdates)
@@ -1213,7 +1247,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
       if (error) {
         console.error('Error updating product:', error);
-        toast.error('Failed to update product in database');
+        const message = (error.message || '').toLowerCase();
+        const looksLikeSchemaIssue =
+          message.includes('schema cache') ||
+          message.includes('could not find the table') ||
+          message.includes('column') ||
+          message.includes('relation');
+
+        if (looksLikeSchemaIssue) {
+          toast.error('Database schema is missing tables/columns. Run SUPABASE_SETUP.sql, then refresh Supabase schema cache.');
+        } else {
+          toast.error('Failed to update product in database');
+        }
       }
     } else {
       const updatedProducts = products.map((p) => (p.id === id ? { ...p, ...updates } : p));
@@ -1254,7 +1299,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       const { error } = await supabase.from('units').insert(newUnit);
       if (error) {
         console.error('Error adding unit:', error);
-        toast.error('Failed to save unit');
+        const message = (error.message || '').toLowerCase();
+        if (message.includes('schema cache') || message.includes('could not find the table') || message.includes('relation')) {
+          toast.error('Units table not found in Supabase. Run SUPABASE_SETUP.sql (creates public.units). Saved locally for now.');
+        } else {
+          toast.error('Failed to save unit');
+        }
       }
     } else {
       localStorage.setItem('pos_units', JSON.stringify([...units, newUnit]));
@@ -1270,7 +1320,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       const { error } = await supabase.from('units').update(updates).eq('id', id);
       if (error) {
         console.error('Error updating unit:', error);
-        toast.error('Failed to update unit');
+        const message = (error.message || '').toLowerCase();
+        if (message.includes('schema cache') || message.includes('could not find the table') || message.includes('relation')) {
+          toast.error('Units table not found in Supabase. Run SUPABASE_SETUP.sql (creates public.units). Saved locally for now.');
+        } else {
+          toast.error('Failed to update unit');
+        }
       }
     } else {
       const updatedUnits = units.map((u) => (u.id === id ? { ...u, ...updates } : u));

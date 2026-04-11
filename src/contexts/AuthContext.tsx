@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, ReactNode } from 'react';
+import React, { useState, useEffect, useRef, ReactNode, useCallback } from 'react';
 import { User, UserRole, UserCredentials } from '@/types/pos';
 import type { User as SupabaseAuthUser } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
@@ -94,77 +94,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
   const [dbUsers, setDbUsers] = useState<UserCredentials[]>([]);
   const hasLoggedProfileTimeout = useRef(false);
+  const currentUserRef = useRef<User | null>(null);
 
   // ----------------------------------------------------------
   // LOCAL MODE: simple credential check against localStorage
   // ----------------------------------------------------------
   useEffect(() => {
-    if (IS_LOCAL_MODE) {
-      console.info(
-        '%c[LOCAL MODE] Supabase is not configured. Using demo accounts.\n' +
-        'Login with: admin@pos.com / password  (or cashier@pos.com / frontdesk@pos.com)',
-        'color: #f59e0b; font-weight: bold;'
-      );
+    currentUserRef.current = user;
+  }, [user]);
 
-      // Restore session from localStorage
-      const savedSession = localStorage.getItem('pos_local_session');
-      if (savedSession) {
-        try {
-          setUser(JSON.parse(savedSession));
-        } catch { /* ignore bad data */ }
-      }
-      setIsLoading(false);
-      return;
-    }
-
-    // ----------------------------------------------------------
-    // SUPABASE MODE (original logic)
-    // ----------------------------------------------------------
-    const checkSession = async () => {
-      setIsLoading(true);
-      try {
-        const { data: { session }, error } = await withTimeout(
-          supabase.auth.getSession(),
-          SESSION_REQUEST_TIMEOUT_MS,
-          'Auth session request timed out'
+  const fetchAllUsers = useCallback(async () => {
+    if (IS_LOCAL_MODE) return;
+    try {
+      const { data } = await supabase.from('user_roles').select('email, role, full_name');
+      if (data) {
+        setDbUsers(
+          data.map((d) => ({
+            email: d.email,
+            password: '***',
+            fullName: d.full_name,
+            role: d.role as UserRole,
+          }))
         );
-
-        if (error) {
-          console.error("Auth session error:", error);
-          setIsLoading(false);
-          return;
-        }
-
-        if (session?.user) {
-          await loadUserProfile(session.user.id, session.user.email!, session.user);
-        } else {
-          setIsLoading(false);
-        }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error("Failed to check session. Check network or Supabase URL:", message);
-        setIsLoading(false);
       }
-    };
-
-    checkSession();
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      if (session?.user) {
-        await loadUserProfile(session.user.id, session.user.email!, session.user);
-      } else {
-        setUser(null);
-        setIsLoading(false);
-      }
-    });
-
-    return () => {
-      subscription.unsubscribe();
-    };
+    } catch (err) {
+      console.error('Failed to fetch all users:', err);
+    }
   }, []);
 
-  const loadUserProfile = async (userId: string, email: string, authUser: SupabaseAuthUser | null = null) => {
+  const loadUserProfile = useCallback(async (userId: string, email: string, authUser: SupabaseAuthUser | null = null) => {
     try {
+      const lastKnownRoleForThisUser: UserRole | null =
+        currentUserRef.current?.id === userId ? currentUserRef.current.role : null;
+
+      // Primary lookup by authenticated user id
       const { data: roleByUserId, error: byUserIdError } = await withTimeout(
         supabase.from('user_roles').select('*').eq('user_id', userId).maybeSingle(),
         PROFILE_REQUEST_TIMEOUT_MS,
@@ -191,7 +154,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           id: userId,
           email,
           fullName: resolveDisplayNameFromAuthUser(authUser, email),
-          role: 'cashier',
+          role: lastKnownRoleForThisUser ?? 'cashier',
         });
         return;
       }
@@ -224,8 +187,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setUser({
             id: userId,
             email,
-            fullName: email.split('@')[0],
-            role: 'cashier',
+            fullName: resolveDisplayNameFromAuthUser(authUser, email),
+            role: lastKnownRoleForThisUser ?? 'cashier',
           });
           return;
         }
@@ -248,8 +211,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser({
           id: userId,
           email,
-          fullName: email.split('@')[0],
-          role: 'cashier',
+          fullName: resolveDisplayNameFromAuthUser(authUser, email),
+          role: lastKnownRoleForThisUser ?? 'cashier',
         });
       }
     } catch (err) {
@@ -266,29 +229,83 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser({
         id: userId,
         email: email,
-        fullName: email.split('@')[0],
-        role: 'cashier',
+        fullName: resolveDisplayNameFromAuthUser(authUser, email),
+        role: (currentUserRef.current?.id === userId ? currentUserRef.current.role : null) ?? 'cashier',
       });
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [fetchAllUsers]);
 
-  const fetchAllUsers = async () => {
-    try {
-      const { data, error } = await supabase.from('user_roles').select('email, role, full_name');
-      if (data) {
-        setDbUsers(data.map(d => ({
-          email: d.email,
-          password: '***',
-          fullName: d.full_name,
-          role: d.role as UserRole
-        })));
+  useEffect(() => {
+    if (IS_LOCAL_MODE) {
+      console.info(
+        '%c[LOCAL MODE] Supabase is not configured. Using demo accounts.\n' +
+        'Login with: admin@pos.com / password  (or cashier@pos.com / frontdesk@pos.com)',
+        'color: #f59e0b; font-weight: bold;'
+      );
+
+      const savedSession = localStorage.getItem('pos_local_session');
+      if (savedSession) {
+        try {
+          setUser(JSON.parse(savedSession));
+        } catch { /* ignore bad data */ }
       }
-    } catch (err) {
-      console.error("Failed to fetch all users:", err);
+
+      setIsLoading(false);
+      return;
     }
-  };
+
+    const checkSession = async () => {
+      setIsLoading(true);
+      try {
+        const { data: { session }, error } = await withTimeout(
+          supabase.auth.getSession(),
+          SESSION_REQUEST_TIMEOUT_MS,
+          'Auth session request timed out'
+        );
+
+        if (error) {
+          console.error('Auth session error:', error);
+          setIsLoading(false);
+          return;
+        }
+
+        if (session?.user) {
+          await loadUserProfile(session.user.id, session.user.email!, session.user);
+        } else {
+          setIsLoading(false);
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error('Failed to check session. Check network or Supabase URL:', message);
+        setIsLoading(false);
+      }
+    };
+
+    void checkSession();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (event === 'INITIAL_SESSION') return;
+
+      if (session?.user) {
+        const existingUser = currentUserRef.current;
+        if (event === 'TOKEN_REFRESHED' && existingUser?.id === session.user.id) {
+          return;
+        }
+
+        setIsLoading(true);
+        await loadUserProfile(session.user.id, session.user.email!, session.user);
+      } else {
+        setUser(null);
+        setIsLoading(false);
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, [loadUserProfile]);
 
   // ----------------------------------------------------------
   // Login

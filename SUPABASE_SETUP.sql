@@ -4,21 +4,21 @@ create extension if not exists "uuid-ossp";
 create extension if not exists "pgcrypto";
 
 -- Categories Table
-create table public.categories (
+create table if not exists public.categories (
   id text primary key,
   name text not null,
   description text
 );
 
 -- Units Table
-create table public.units (
+create table if not exists public.units (
   id text primary key,
   name text not null unique,
   description text
 );
 
 -- Products Table
-create table public.products (
+create table if not exists public.products (
   id text primary key,
   sku text not null,
   name text not null,
@@ -31,13 +31,17 @@ create table public.products (
   low_stock_threshold integer not null default 0
 );
 
+-- If upgrading an existing database, ensure key product columns exist.
+alter table public.products add column if not exists category_id text;
+alter table public.products add column if not exists unit_id text;
+
 -- Add inventory tracking columns
 alter table public.products add column if not exists expiry_date date;
 alter table public.products add column if not exists barcode text;
 alter table public.products add column if not exists barcode_enabled boolean not null default false;
 
 -- Customers Table (Digi Khata)
-create table public.customers (
+create table if not exists public.customers (
   id text primary key,
   name text not null,
   phone text not null,
@@ -55,7 +59,7 @@ alter table public.customers add column if not exists total_paid numeric not nul
 alter table public.customers add column if not exists balance numeric not null default 0;
 
 -- Customer Transactions Table (Credit Ledger)
-create table public.customer_transactions (
+create table if not exists public.customer_transactions (
   id text primary key,
   customer_id text references public.customers(id) on delete cascade,
   order_id text, -- Link to order if it's a credit sale
@@ -76,7 +80,7 @@ alter table public.customer_transactions add column if not exists card_fee_amoun
 alter table public.customer_transactions add column if not exists total_charged numeric;
 
 -- Customer Reminders Table (Udhaar reminders)
-create table public.customer_reminders (
+create table if not exists public.customer_reminders (
   id text primary key,
   customer_id text references public.customers(id) on delete cascade,
   frequency text not null, -- 'daily' | 'weekly' | 'monthly'
@@ -94,7 +98,7 @@ alter table public.customer_reminders add column if not exists note text;
 alter table public.customer_reminders add column if not exists last_triggered_at timestamp with time zone;
 
 -- Suppliers Table
-create table public.suppliers (
+create table if not exists public.suppliers (
   id text primary key,
   name text not null,
   phone text not null,
@@ -114,7 +118,7 @@ alter table public.suppliers add column if not exists total_paid numeric not nul
 alter table public.suppliers add column if not exists balance numeric not null default 0;
 
 -- Supplier Purchases Table
-create table public.supplier_purchases (
+create table if not exists public.supplier_purchases (
   id text primary key,
   supplier_id text references public.suppliers(id) on delete cascade,
   description text not null,
@@ -128,7 +132,7 @@ alter table public.supplier_purchases add column if not exists purchase_date dat
 alter table public.supplier_purchases add column if not exists invoice_number text;
 
 -- Supplier Payment Schedules Table
-create table public.supplier_payment_schedules (
+create table if not exists public.supplier_payment_schedules (
   id text primary key,
   supplier_id text references public.suppliers(id) on delete cascade,
   frequency text not null, -- 'daily' | 'weekly' | 'monthly'
@@ -148,7 +152,7 @@ alter table public.supplier_payment_schedules add column if not exists note text
 alter table public.supplier_payment_schedules add column if not exists last_paid_at timestamp with time zone;
 
 -- Orders Table
-create table public.orders (
+create table if not exists public.orders (
   id text primary key,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null,
   cashier_id text,
@@ -183,7 +187,7 @@ alter table public.orders add column if not exists card_fee_amount numeric defau
 alter table public.orders add column if not exists card_fee_rate numeric default 0;
 
 -- Order Items Table
-create table public.order_items (
+create table if not exists public.order_items (
   id text primary key,
   order_id text references public.orders(id),
   product_id text references public.products(id),
@@ -195,7 +199,7 @@ create table public.order_items (
 );
 
 -- Store Settings Table
-create table public.store_settings (
+create table if not exists public.store_settings (
   id integer primary key default 1,
   store_name text,
   address text,
@@ -228,8 +232,21 @@ insert into public.categories (id, name, description) values
   ('cat_books', 'Books & Stationery', 'Books, office and school supplies')
 on conflict (id) do nothing;
 
+-- Insert default units
+insert into public.units (id, name, description) values
+  ('unit-pcs', 'Pieces', 'Individual pieces'),
+  ('unit-pkt', 'Packets', 'Packets/Packs'),
+  ('unit-kg', 'Kilograms', 'Weight in kilograms'),
+  ('unit-ltr', 'Liters', 'Volume in liters'),
+  ('unit-box', 'Boxes', 'Box/carton'),
+  ('unit-dozen', 'Dozens', 'Set of 12 items'),
+  ('unit-gram', 'Grams', 'Weight in grams'),
+  ('unit-ml', 'Milliliters', 'Volume in milliliters')
+on conflict (id) do nothing;
+
 -- Enable Row Level Security (RLS)
 alter table public.categories enable row level security;
+alter table public.units enable row level security;
 alter table public.products enable row level security;
 alter table public.customers enable row level security;
 alter table public.customer_transactions enable row level security;
@@ -244,7 +261,21 @@ alter table public.store_settings enable row level security;
 -- Create policies to allow anonymous access (since we are using mock auth in the frontend)
 -- In a real production app with Supabase Auth, you would restrict this to authenticated users.
 
+drop policy if exists "Allow public access to categories" on public.categories;
+drop policy if exists "Allow public access to units" on public.units;
+drop policy if exists "Allow public access to products" on public.products;
+drop policy if exists "Allow public access to customers" on public.customers;
+drop policy if exists "Allow public access to customer_transactions" on public.customer_transactions;
+drop policy if exists "Allow public access to customer_reminders" on public.customer_reminders;
+drop policy if exists "Allow public access to suppliers" on public.suppliers;
+drop policy if exists "Allow public access to supplier_purchases" on public.supplier_purchases;
+drop policy if exists "Allow public access to supplier_payment_schedules" on public.supplier_payment_schedules;
+drop policy if exists "Allow public access to orders" on public.orders;
+drop policy if exists "Allow public access to order_items" on public.order_items;
+drop policy if exists "Allow public access to store_settings" on public.store_settings;
+
 create policy "Allow public access to categories" on public.categories for all using (true);
+create policy "Allow public access to units" on public.units for all using (true);
 create policy "Allow public access to products" on public.products for all using (true);
 create policy "Allow public access to customers" on public.customers for all using (true);
 create policy "Allow public access to customer_transactions" on public.customer_transactions for all using (true);
@@ -312,15 +343,15 @@ create policy "Admins can read all roles" on public.user_roles
 -- );
 
 -- Create indexes for better query performance
-create index idx_products_category on public.products(category_id);
-create index idx_orders_created_at on public.orders(created_at);
-create index idx_orders_customer_id on public.orders(customer_id);
-create index idx_order_items_order_id on public.order_items(order_id);
-create index idx_customer_transactions_customer_id on public.customer_transactions(customer_id);
-create index idx_customer_reminders_customer_id on public.customer_reminders(customer_id);
-create index idx_customer_reminders_next_date on public.customer_reminders(next_reminder_date);
-create index idx_customers_phone on public.customers(phone);
-create index idx_suppliers_phone on public.suppliers(phone);
-create index idx_supplier_purchases_supplier_id on public.supplier_purchases(supplier_id);
-create index idx_supplier_payment_schedules_supplier_id on public.supplier_payment_schedules(supplier_id);
-create index idx_supplier_payment_schedules_next_date on public.supplier_payment_schedules(next_payment_date);
+create index if not exists idx_products_category on public.products(category_id);
+create index if not exists idx_orders_created_at on public.orders(created_at);
+create index if not exists idx_orders_customer_id on public.orders(customer_id);
+create index if not exists idx_order_items_order_id on public.order_items(order_id);
+create index if not exists idx_customer_transactions_customer_id on public.customer_transactions(customer_id);
+create index if not exists idx_customer_reminders_customer_id on public.customer_reminders(customer_id);
+create index if not exists idx_customer_reminders_next_date on public.customer_reminders(next_reminder_date);
+create index if not exists idx_customers_phone on public.customers(phone);
+create index if not exists idx_suppliers_phone on public.suppliers(phone);
+create index if not exists idx_supplier_purchases_supplier_id on public.supplier_purchases(supplier_id);
+create index if not exists idx_supplier_payment_schedules_supplier_id on public.supplier_payment_schedules(supplier_id);
+create index if not exists idx_supplier_payment_schedules_next_date on public.supplier_payment_schedules(next_payment_date);
