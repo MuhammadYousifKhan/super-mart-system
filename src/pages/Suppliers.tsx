@@ -32,7 +32,7 @@ import {
 } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
-import { Building2, Plus, ReceiptText, CalendarClock, Wrench, CheckCircle2 } from 'lucide-react';
+import { Building2, Plus, ReceiptText, CalendarClock, Wrench, CheckCircle2, Printer } from 'lucide-react';
 
 function formatPKR(amount: number) {
   return `Rs. ${amount.toLocaleString()}`;
@@ -53,6 +53,7 @@ export default function Suppliers() {
     deleteSupplierPaymentSchedule,
     getDueSupplierPaymentSchedules,
     markSupplierSchedulePaid,
+    settings,
   } = useStore();
 
   const [activeTab, setActiveTab] = useState('records');
@@ -241,6 +242,100 @@ export default function Suppliers() {
     }
   };
 
+  const generateSupplierLedgerText = (supplierId?: string) => {
+    const purchases = supplierId && supplierId !== 'all'
+      ? getSupplierPurchases(supplierId)
+      : supplierPurchases;
+
+    const supplier = supplierId && supplierId !== 'all' ? getSupplierById(supplierId) : null;
+
+    let text = `*${settings.storeName}*\n`;
+    text += `${settings.address}\n`;
+    text += `Tel: ${settings.phone}\n\n`;
+    text += `SUPPLIER LEDGER\n`;
+    text += `━━━━━━━━━━━━━━━━━━━━\n`;
+
+    if (supplier) {
+      text += `Supplier: ${supplier.name}\n`;
+      text += `Phone: ${supplier.phone}\n`;
+      if (supplier.contactPerson) {
+        text += `Contact: ${supplier.contactPerson}\n`;
+      }
+      text += `Address: ${supplier.address}\n\n`;
+      text += `━━━━━━━━━━━━━━━━━━━━\n`;
+      text += `SUMMARY\n`;
+      text += `━━━━━━━━━━━━━━━━━━━━\n`;
+      text += `Total Purchased: Rs. ${supplier.totalPurchased.toLocaleString()}\n`;
+      text += `Total Paid: Rs. ${supplier.totalPaid.toLocaleString()}\n`;
+      text += `Balance Due: Rs. ${supplier.balance.toLocaleString()}\n\n`;
+    } else {
+      text += `All Suppliers Summary\n\n`;
+    }
+
+    if (purchases.length > 0) {
+      text += `━━━━━━━━━━━━━━━━━━━━\n`;
+      text += `TRANSACTION HISTORY\n`;
+      text += `━━━━━━━━━━━━━━━━━━━━\n`;
+      purchases
+        .sort((a, b) => new Date(a.purchaseDate).getTime() - new Date(b.purchaseDate).getTime())
+        .forEach((purchase) => {
+          const date = new Date(purchase.purchaseDate).toLocaleDateString('en-US', {
+            month: 'short',
+            day: 'numeric',
+            year: 'numeric',
+          });
+          const supplierName = getSupplierById(purchase.supplierId)?.name || 'Unknown';
+          text += `${date}\n`;
+          text += `${purchase.amount < 0 ? 'PAYMENT' : 'PURCHASE'}: ${purchase.description}\n`;
+          if (!supplier) {
+            text += `Supplier: ${supplierName}\n`;
+          }
+          if (purchase.invoiceNumber) {
+            text += `Invoice: ${purchase.invoiceNumber}\n`;
+          }
+          text += `Amount: Rs. ${Math.abs(purchase.amount).toLocaleString()}\n`;
+          text += `━━━━━━━━━━━━━━━━━━━━\n`;
+        });
+    } else {
+      text += `No transactions found\n`;
+    }
+
+    text += `\n${settings.receiptFooterMessage}\n`;
+    text += `Generated: ${new Date().toLocaleString()}`;
+    return text;
+  };
+
+  const handlePrintSupplierLedger = (supplierId?: string) => {
+    const printContent = generateSupplierLedgerText(supplierId);
+    const printWindow = window.open('', '_blank');
+    if (printWindow) {
+      printWindow.document.write(`
+        <html>
+          <head>
+            <title>Supplier Ledger${supplierId && supplierId !== 'all' ? ` - ${getSupplierById(supplierId)?.name}` : ''}</title>
+            <style>
+              body {
+                font-family: 'Courier New', monospace;
+                font-size: 12px;
+                line-height: 1.2;
+                margin: 0;
+                padding: 10px;
+                white-space: pre-wrap;
+                max-width: 300px;
+              }
+              @media print {
+                body { margin: 0; }
+              }
+            </style>
+          </head>
+          <body>${printContent}</body>
+        </html>
+      `);
+      printWindow.document.close();
+      printWindow.print();
+    }
+  };
+
   return (
     <div className="p-4 md:p-6 space-y-6">
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
@@ -400,7 +495,18 @@ export default function Suppliers() {
 
           <Card>
             <CardHeader>
-              <CardTitle>Ledger Entries</CardTitle>
+              <div className="flex items-center justify-between">
+                <CardTitle>Ledger Entries</CardTitle>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handlePrintSupplierLedger(selectedSupplierId)}
+                  className="gap-2"
+                >
+                  <Printer className="h-4 w-4" />
+                  Print Ledger
+                </Button>
+              </div>
             </CardHeader>
             <CardContent className="space-y-3">
               <div className="space-y-2">

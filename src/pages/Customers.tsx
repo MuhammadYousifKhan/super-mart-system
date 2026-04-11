@@ -58,6 +58,7 @@ import {
   Bell,
   BellRing,
   CalendarDays,
+  Printer,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -266,6 +267,89 @@ export default function Customers() {
       hour: '2-digit',
       minute: '2-digit',
     });
+  };
+
+  const generateCustomerLedgerText = (customer: Customer) => {
+    const transactions = getCustomerTransactions(customer.id)
+      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+    let text = `*${settings.storeName}*\n`;
+    text += `${settings.address}\n`;
+    text += `Tel: ${settings.phone}\n\n`;
+    text += `CUSTOMER LEDGER\n`;
+    text += `━━━━━━━━━━━━━━━━━━━━\n`;
+    text += `Customer: ${customer.name}\n`;
+    text += `Phone: ${customer.phone}\n`;
+    if (customer.nic) {
+      text += `NIC: ${customer.nic}\n`;
+    }
+    text += `Address: ${customer.address}\n\n`;
+    text += `━━━━━━━━━━━━━━━━━━━━\n`;
+    text += `SUMMARY\n`;
+    text += `━━━━━━━━━━━━━━━━━━━━\n`;
+    text += `Total Credit: Rs. ${customer.totalCredit.toLocaleString()}\n`;
+    text += `Total Paid: Rs. ${customer.totalPaid.toLocaleString()}\n`;
+    text += `Balance Due: Rs. ${customer.balance.toLocaleString()}\n\n`;
+
+    if (transactions.length > 0) {
+      text += `━━━━━━━━━━━━━━━━━━━━\n`;
+      text += `TRANSACTION HISTORY\n`;
+      text += `━━━━━━━━━━━━━━━━━━━━\n`;
+      transactions.forEach((transaction) => {
+        const date = new Date(transaction.createdAt).toLocaleDateString('en-US', {
+          month: 'short',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+        text += `${date}\n`;
+        text += `${transaction.type === 'credit' ? 'CREDIT' : 'PAYMENT'}: ${transaction.description}\n`;
+        if (transaction.type === 'payment' && transaction.paymentMethod) {
+          text += `Method: ${transaction.paymentMethod.toUpperCase()}`;
+          if (transaction.paymentMethod === 'card' && transaction.cardFeeAmount) {
+            text += ` | Fee: Rs. ${transaction.cardFeeAmount.toLocaleString()}`;
+          }
+          text += '\n';
+        }
+        text += `Amount: Rs. ${transaction.amount.toLocaleString()}\n`;
+        text += `━━━━━━━━━━━━━━━━━━━━\n`;
+      });
+    }
+
+    text += `\n${settings.receiptFooterMessage}\n`;
+    text += `Generated: ${new Date().toLocaleString()}`;
+    return text;
+  };
+
+  const handlePrintCustomerLedger = (customer: Customer) => {
+    const printContent = generateCustomerLedgerText(customer);
+    const printWindow = window.open('', '_blank');
+    if (printWindow) {
+      printWindow.document.write(`
+        <html>
+          <head>
+            <title>Customer Ledger - ${customer.name}</title>
+            <style>
+              body {
+                font-family: 'Courier New', monospace;
+                font-size: 12px;
+                line-height: 1.2;
+                margin: 0;
+                padding: 10px;
+                white-space: pre-wrap;
+                max-width: 300px;
+              }
+              @media print {
+                body { margin: 0; }
+              }
+            </style>
+          </head>
+          <body>${printContent}</body>
+        </html>
+      `);
+      printWindow.document.close();
+      printWindow.print();
+    }
   };
 
   const totalOutstanding = customers.reduce((sum, c) => sum + c.balance, 0);
@@ -843,6 +927,14 @@ export default function Customers() {
             </ScrollArea>
           </div>
           <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => selectedCustomer && handlePrintCustomerLedger(selectedCustomer)}
+              className="gap-2"
+            >
+              <Printer className="h-4 w-4" />
+              Print Ledger
+            </Button>
             {selectedCustomer && selectedCustomer.balance > 0 && (
               <Button
                 onClick={() => {
