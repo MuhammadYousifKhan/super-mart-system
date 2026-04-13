@@ -88,7 +88,12 @@ export default function Customers() {
   const [showLedgerModal, setShowLedgerModal] = useState(false);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [showReminderModal, setShowReminderModal] = useState(false);
+  const [showDateRangeDialog, setShowDateRangeDialog] = useState(false);
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
+
+  // Date range for ledger print
+  const [ledgerFromDate, setLedgerFromDate] = useState('');
+  const [ledgerToDate, setLedgerToDate] = useState(new Date().toISOString().slice(0, 10));
 
   // Form state
   const [formData, setFormData] = useState({
@@ -269,60 +274,35 @@ export default function Customers() {
     });
   };
 
-  const generateCustomerLedgerText = (customer: Customer) => {
-    const transactions = getCustomerTransactions(customer.id)
-      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
-    let text = `*${settings.storeName}*\n`;
-    text += `${settings.address}\n`;
-    text += `Tel: ${settings.phone}\n\n`;
-    text += `CUSTOMER LEDGER\n`;
-    text += `━━━━━━━━━━━━━━━━━━━━\n`;
-    text += `Customer: ${customer.name}\n`;
-    text += `Phone: ${customer.phone}\n`;
-    if (customer.nic) {
-      text += `NIC: ${customer.nic}\n`;
-    }
-    text += `Address: ${customer.address}\n\n`;
-    text += `━━━━━━━━━━━━━━━━━━━━\n`;
-    text += `SUMMARY\n`;
-    text += `━━━━━━━━━━━━━━━━━━━━\n`;
-    text += `Total Credit: Rs. ${customer.totalCredit.toLocaleString()}\n`;
-    text += `Total Paid: Rs. ${customer.totalPaid.toLocaleString()}\n`;
-    text += `Balance Due: Rs. ${customer.balance.toLocaleString()}\n\n`;
 
-    if (transactions.length > 0) {
-      text += `━━━━━━━━━━━━━━━━━━━━\n`;
-      text += `TRANSACTION HISTORY\n`;
-      text += `━━━━━━━━━━━━━━━━━━━━\n`;
-      transactions.forEach((transaction) => {
-        const date = new Date(transaction.createdAt).toLocaleDateString('en-US', {
-          month: 'short',
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit',
-        });
-        text += `${date}\n`;
-        text += `${transaction.type === 'credit' ? 'CREDIT' : 'PAYMENT'}: ${transaction.description}\n`;
-        if (transaction.type === 'payment' && transaction.paymentMethod) {
-          text += `Method: ${transaction.paymentMethod.toUpperCase()}`;
-          if (transaction.paymentMethod === 'card' && transaction.cardFeeAmount) {
-            text += ` | Fee: Rs. ${transaction.cardFeeAmount.toLocaleString()}`;
-          }
-          text += '\n';
-        }
-        text += `Amount: Rs. ${transaction.amount.toLocaleString()}\n`;
-        text += `━━━━━━━━━━━━━━━━━━━━\n`;
-      });
-    }
-
-    text += `\n${settings.receiptFooterMessage}\n`;
-    text += `Generated: ${new Date().toLocaleString()}`;
-    return text;
+  const openPrintDateDialog = (customer: Customer) => {
+    setSelectedCustomer(customer);
+    setLedgerFromDate('');
+    setLedgerToDate(new Date().toISOString().slice(0, 10));
+    setShowDateRangeDialog(true);
   };
 
   const handlePrintCustomerLedger = (customer: Customer) => {
-    const printContent = generateCustomerLedgerText(customer);
+    const allTransactions = getCustomerTransactions(customer.id)
+      .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+    // Filter by date range
+    const transactions = allTransactions.filter((t) => {
+      const txDate = new Date(t.createdAt);
+      if (ledgerFromDate) {
+        const from = new Date(ledgerFromDate);
+        from.setHours(0, 0, 0, 0);
+        if (txDate < from) return false;
+      }
+      if (ledgerToDate) {
+        const to = new Date(ledgerToDate);
+        to.setHours(23, 59, 59, 999);
+        if (txDate > to) return false;
+      }
+      return true;
+    });
+
     const printWindow = window.open('', '_blank');
     if (printWindow) {
       printWindow.document.write(`
@@ -330,21 +310,316 @@ export default function Customers() {
           <head>
             <title>Customer Ledger - ${customer.name}</title>
             <style>
+              @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+              * { margin: 0; padding: 0; box-sizing: border-box; }
+
               body {
-                font-family: 'Courier New', monospace;
-                font-size: 12px;
-                line-height: 1.2;
-                margin: 0;
-                padding: 10px;
-                white-space: pre-wrap;
-                max-width: 300px;
+                font-family: 'Inter', 'Segoe UI', Arial, sans-serif;
+                font-size: 11px;
+                line-height: 1.4;
+                color: #1a1a1a;
+                width: 72mm;
+                max-width: 72mm;
+                margin: 0 auto;
+                padding: 6mm 4mm;
+                background: #fff;
               }
+
+              .receipt-header {
+                text-align: center;
+                padding-bottom: 8px;
+                border-bottom: 2px solid #000;
+                margin-bottom: 8px;
+              }
+
+              .store-name {
+                font-size: 16px;
+                font-weight: 700;
+                letter-spacing: 1px;
+                text-transform: uppercase;
+                margin-bottom: 2px;
+              }
+
+              .store-details {
+                font-size: 9px;
+                color: #444;
+                line-height: 1.5;
+              }
+
+              .ledger-title {
+                text-align: center;
+                margin: 10px 0;
+                padding: 6px 0;
+                background: #000;
+                color: #fff;
+                font-size: 12px;
+                font-weight: 700;
+                letter-spacing: 2px;
+                text-transform: uppercase;
+                border-radius: 2px;
+              }
+
+              .customer-info {
+                padding: 8px 0;
+                border-bottom: 1px dashed #999;
+                margin-bottom: 8px;
+              }
+
+              .customer-info .info-row {
+                display: flex;
+                justify-content: space-between;
+                align-items: flex-start;
+                padding: 2px 0;
+                font-size: 10px;
+              }
+
+              .info-row .label {
+                font-weight: 600;
+                color: #555;
+                min-width: 55px;
+              }
+
+              .info-row .value {
+                text-align: right;
+                flex: 1;
+                word-break: break-word;
+              }
+
+              .summary-section {
+                margin: 10px 0;
+                padding: 8px;
+                border: 1.5px solid #000;
+                border-radius: 3px;
+              }
+
+              .summary-title {
+                text-align: center;
+                font-size: 10px;
+                font-weight: 700;
+                letter-spacing: 1.5px;
+                text-transform: uppercase;
+                margin-bottom: 6px;
+                padding-bottom: 4px;
+                border-bottom: 1px solid #ddd;
+              }
+
+              .summary-row {
+                display: flex;
+                justify-content: space-between;
+                padding: 3px 0;
+                font-size: 10px;
+              }
+
+              .summary-row.balance {
+                margin-top: 4px;
+                padding-top: 6px;
+                border-top: 1.5px solid #000;
+                font-size: 12px;
+                font-weight: 700;
+              }
+
+              .transactions-header {
+                text-align: center;
+                font-size: 10px;
+                font-weight: 700;
+                letter-spacing: 1.5px;
+                text-transform: uppercase;
+                margin: 12px 0 6px;
+                padding: 5px 0;
+                border-top: 1px dashed #999;
+                border-bottom: 1px dashed #999;
+              }
+
+              .transaction-item {
+                padding: 6px 0;
+                border-bottom: 1px dotted #ccc;
+              }
+
+              .transaction-item:last-child {
+                border-bottom: none;
+              }
+
+              .txn-top-row {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 2px;
+              }
+
+              .txn-type {
+                font-size: 9px;
+                font-weight: 700;
+                padding: 1px 5px;
+                border-radius: 2px;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+              }
+
+              .txn-type.credit {
+                background: #f0f0f0;
+                color: #000;
+                border: 1px solid #aaa;
+              }
+
+              .txn-type.payment {
+                background: #000;
+                color: #fff;
+                border: 1px solid #000;
+              }
+
+              .txn-amount {
+                font-size: 11px;
+                font-weight: 700;
+                color: #000;
+              }
+
+              .txn-desc {
+                font-size: 9px;
+                color: #555;
+                margin: 1px 0;
+              }
+
+              .txn-meta {
+                font-size: 8px;
+                color: #888;
+                display: flex;
+                justify-content: space-between;
+              }
+
+              .receipt-footer {
+                margin-top: 12px;
+                padding-top: 8px;
+                border-top: 2px solid #000;
+                text-align: center;
+              }
+
+              .footer-message {
+                font-size: 10px;
+                font-weight: 500;
+                margin-bottom: 4px;
+              }
+
+              .footer-generated {
+                font-size: 8px;
+                color: #888;
+                margin-top: 4px;
+              }
+
+              .divider-dots {
+                text-align: center;
+                letter-spacing: 3px;
+                color: #ccc;
+                font-size: 8px;
+                margin: 4px 0;
+              }
+
               @media print {
-                body { margin: 0; }
+                @page {
+                  size: 80mm auto;
+                  margin: 0;
+                }
+                body {
+                  width: 72mm;
+                  max-width: 72mm;
+                  padding: 3mm;
+                }
               }
             </style>
           </head>
-          <body>${printContent}</body>
+          <body>
+            <!-- Header -->
+            <div class="receipt-header">
+              <div class="store-name">${settings.storeName}</div>
+              <div class="store-details">
+                ${settings.address}<br/>
+                Tel: ${settings.phone}
+              </div>
+            </div>
+
+            <!-- Ledger Title -->
+            <div class="ledger-title">Customer Ledger</div>
+
+            <!-- Customer Info -->
+            <div class="customer-info">
+              <div class="info-row">
+                <span class="label">Name:</span>
+                <span class="value">${customer.name}</span>
+              </div>
+              <div class="info-row">
+                <span class="label">Phone:</span>
+                <span class="value">${customer.phone}</span>
+              </div>
+              ${customer.nic ? `
+              <div class="info-row">
+                <span class="label">NIC:</span>
+                <span class="value">${customer.nic}</span>
+              </div>` : ''}
+              <div class="info-row">
+                <span class="label">Address:</span>
+                <span class="value">${customer.address}</span>
+              </div>
+            </div>
+
+            <!-- Date Range -->
+            <div style="text-align:center; font-size:9px; color:#555; padding:4px 0; border-bottom:1px dashed #999; margin-bottom:8px;">
+              <strong>Period:</strong> ${ledgerFromDate ? new Date(ledgerFromDate + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'All time'} — ${ledgerToDate ? new Date(ledgerToDate + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'Present'}
+            </div>
+
+            <!-- Transactions -->
+            ${transactions.length > 0 ? `
+              <div class="transactions-header">Transaction History</div>
+              ${transactions.map((transaction) => {
+                const date = new Date(transaction.createdAt).toLocaleDateString('en-US', {
+                  month: 'short',
+                  day: 'numeric',
+                  year: 'numeric',
+                });
+                const time = new Date(transaction.createdAt).toLocaleTimeString('en-US', {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                });
+                const isCredit = transaction.type === 'credit';
+                return `
+                  <div class="transaction-item">
+                    <div class="txn-top-row">
+                      <span class="txn-type ${isCredit ? 'credit' : 'payment'}">${isCredit ? '▲ Credit' : '▼ Payment'}</span>
+                      <span class="txn-amount">${isCredit ? '+' : '-'} Rs. ${transaction.amount.toLocaleString()}</span>
+                    </div>
+                    <div class="txn-desc">${transaction.description}</div>
+                    <div class="txn-meta">
+                      <span>${date} ${time}</span>
+                      ${transaction.type === 'payment' && transaction.paymentMethod ? `<span>${transaction.paymentMethod.toUpperCase()}${transaction.paymentMethod === 'card' && transaction.cardFeeAmount ? ` | Fee: Rs. ${transaction.cardFeeAmount.toLocaleString()}` : ''}</span>` : ''}
+                    </div>
+                  </div>
+                `;
+              }).join('')}
+            ` : '<div style="text-align:center; padding:10px; color:#888; font-size:10px;">No transactions recorded</div>'}
+
+            <!-- Summary -->
+            <div class="summary-section">
+              <div class="summary-title">Account Summary</div>
+              <div class="summary-row">
+                <span>Total Credit:</span>
+                <span>Rs. ${customer.totalCredit.toLocaleString()}</span>
+              </div>
+              <div class="summary-row">
+                <span>Total Paid:</span>
+                <span>Rs. ${customer.totalPaid.toLocaleString()}</span>
+              </div>
+              <div class="summary-row balance">
+                <span>Balance Due:</span>
+                <span>Rs. ${customer.balance.toLocaleString()}</span>
+              </div>
+            </div>
+
+            <!-- Footer -->
+            <div class="receipt-footer">
+              <div class="footer-message">${settings.receiptFooterMessage}</div>
+              <div class="divider-dots">• • • • • • • • • • •</div>
+              <div class="footer-generated">Generated: ${new Date().toLocaleString()}</div>
+            </div>
+          </body>
         </html>
       `);
       printWindow.document.close();
@@ -929,7 +1204,7 @@ export default function Customers() {
           <DialogFooter>
             <Button
               variant="outline"
-              onClick={() => selectedCustomer && handlePrintCustomerLedger(selectedCustomer)}
+              onClick={() => selectedCustomer && openPrintDateDialog(selectedCustomer)}
               className="gap-2"
             >
               <Printer className="h-4 w-4" />
@@ -1122,6 +1397,67 @@ export default function Customers() {
               Cancel
             </Button>
             <Button onClick={handleAddReminder}>Save Reminder</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Date Range Dialog for Ledger Print */}
+      <Dialog open={showDateRangeDialog} onOpenChange={setShowDateRangeDialog}>
+        <DialogContent className="bg-card border-border max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <CalendarDays className="h-5 w-5" />
+              Print Ledger - Date Range
+            </DialogTitle>
+            <DialogDescription>
+              Select the date range for {selectedCustomer?.name}'s ledger. Leave "From" empty to include all past transactions.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label className="text-foreground">From Date</Label>
+              <div className="relative">
+                <CalendarDays className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  type="date"
+                  value={ledgerFromDate}
+                  onChange={(e) => setLedgerFromDate(e.target.value)}
+                  className="pl-10 bg-muted/20 border-border/50"
+                />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label className="text-foreground">To Date</Label>
+              <div className="relative">
+                <CalendarDays className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  type="date"
+                  value={ledgerToDate}
+                  onChange={(e) => setLedgerToDate(e.target.value)}
+                  className="pl-10 bg-muted/20 border-border/50"
+                />
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setShowDateRangeDialog(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                if (selectedCustomer) {
+                  setShowDateRangeDialog(false);
+                  handlePrintCustomerLedger(selectedCustomer);
+                }
+              }}
+              className="gap-2"
+            >
+              <Printer className="h-4 w-4" />
+              Print
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
