@@ -81,7 +81,7 @@ import {
   isSameMonth,
 } from 'date-fns';
 import { Order } from '@/types/pos';
-import { Receipt as ReceiptComponent } from '@/components/pos/Receipt';
+import { Receipt as ReceiptComponent, printOrderReceipt } from '@/components/pos/Receipt';
 
 const COLORS = ['hsl(217, 91%, 50%)', 'hsl(142, 76%, 36%)', 'hsl(38, 92%, 50%)', 'hsl(280, 65%, 60%)', 'hsl(0, 72%, 51%)'];
 
@@ -278,7 +278,10 @@ export default function Analytics() {
   };
 
   const handlePrintBill = () => {
-    window.print();
+    if (selectedOrder) {
+      const items = getOrderItems(selectedOrder.id);
+      printOrderReceipt(selectedOrder, items, settings);
+    }
   };
 
   const handleWhatsAppShare = (order: Order) => {
@@ -946,10 +949,6 @@ export default function Analytics() {
         </DialogContent>
       </Dialog>
 
-      {/* Hidden Receipt for Printing - Only visible in print */}
-      <div className="hidden print:block">
-        {selectedOrder && <ReceiptComponent order={selectedOrder} showActions={false} />}
-      </div>
     </div>
   );
 }
