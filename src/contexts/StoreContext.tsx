@@ -68,6 +68,8 @@ export interface StoreContextType {
   deleteCustomer: (id: string) => void;
   getCustomerById: (id: string) => Customer | undefined;
   addCustomerPayment: (customerId: string, amount: number, description: string, paymentMethod: 'cash' | 'card') => void;
+  updateCustomerTransaction: (id: string, updates: { amount?: number; description?: string }) => void;
+  deleteCustomerTransaction: (id: string) => void;
   getCustomerTransactions: (customerId: string) => CustomerTransaction[];
   addCustomerReminder: (customerId: string, frequency: ReminderFrequency, nextReminderDate: string, note?: string) => void;
   updateCustomerReminder: (id: string, updates: Partial<CustomerReminder>) => void;
@@ -110,6 +112,8 @@ export interface StoreContextType {
     note?: string;
   }) => void;
   getSupplierPurchases: (supplierId: string) => SupplierPurchase[];
+  updateSupplierPurchase: (id: string, updates: { amount?: number; description?: string }) => void;
+  deleteSupplierPurchase: (id: string) => void;
   addSupplierPaymentSchedule: (schedule: Omit<SupplierPaymentSchedule, 'id' | 'createdAt' | 'isActive' | 'lastPaidAt'>) => void;
   updateSupplierPaymentSchedule: (id: string, updates: Partial<SupplierPaymentSchedule>) => void;
   deleteSupplierPaymentSchedule: (id: string) => void;
@@ -163,6 +167,8 @@ type PendingSyncOperationType =
   | 'customer_update'
   | 'customer_delete'
   | 'customer_payment'
+  | 'customer_transaction_update'
+  | 'customer_transaction_delete'
   | 'customer_credit'
   | 'customer_reminder_add'
   | 'customer_reminder_update'
@@ -674,7 +680,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           newBalance: number;
         };
 
-        const productPromises: Array<ReturnType<typeof supabase.from>> = [];
+        const productPromises: Array<PromiseLike<{ error: any }>> = [];
         if (payload.productUpserts && payload.productUpserts.length > 0) {
           productPromises.push(
             supabase.from('products').upsert(
@@ -2285,6 +2291,123 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const updateCustomerTransaction = (id: string, updates: { amount?: number; description?: string }) => {
+    const oldTransaction = customerTransactions.find((t) => t.id === id);
+    if (!oldTransaction) return;
+
+    const oldAmount = oldTransaction.amount;
+    const newAmount = updates.amount !== undefined ? updates.amount : oldAmount;
+    const amountDiff = newAmount - oldAmount;
+
+    // Update the transaction
+    setCustomerTransactions((prev) =>
+      prev.map((t) => (t.id === id ? { ...t, ...updates } : t))
+    );
+
+    // Recalculate customer totals if amount changed
+    if (amountDiff !== 0) {
+      setCustomers((prev) =>
+        prev.map((c) => {
+          if (c.id !== oldTransaction.customerId) return c;
+          if (oldTransaction.type === 'payment') {
+            const newTotalPaid = c.totalPaid + amountDiff;
+            return { ...c, totalPaid: newTotalPaid, balance: c.totalCredit - newTotalPaid };
+          } else {
+            const newTotalCredit = c.totalCredit + amountDiff;
+            return { ...c, totalCredit: newTotalCredit, balance: newTotalCredit - c.totalPaid };
+          }
+        })
+      );
+    }
+
+    if (import.meta.env.VITE_SUPABASE_URL) {
+      const dbUpdates: any = {};
+      if (updates.amount !== undefined) dbUpdates.amount = updates.amount;
+      if (updates.description !== undefined) dbUpdates.description = updates.description;
+
+      const ops: Array<PromiseLike<{ error: any }>> = [
+        supabase.from('customer_transactions').update(dbUpdates).eq('id', id),
+      ];
+
+      if (amountDiff !== 0) {
+        const customer = customers.find((c) => c.id === oldTransaction.customerId);
+        if (customer) {
+          if (oldTransaction.type === 'payment') {
+            const newTotalPaid = customer.totalPaid + amountDiff;
+            const newBalance = customer.totalCredit - newTotalPaid;
+            ops.push(
+              supabase.from('customers').update({ total_paid: newTotalPaid, balance: newBalance }).eq('id', oldTransaction.customerId)
+            );
+          } else {
+            const newTotalCredit = customer.totalCredit + amountDiff;
+            const newBalance = newTotalCredit - customer.totalPaid;
+            ops.push(
+              supabase.from('customers').update({ total_credit: newTotalCredit, balance: newBalance }).eq('id', oldTransaction.customerId)
+            );
+          }
+        }
+      }
+
+      void Promise.all(ops).then((results) => {
+        const firstError = results.find((r) => r.error)?.error;
+        if (firstError) {
+          enqueuePendingSync('customer_transaction_update', { id, updates, amountDiff }, firstError.message);
+        }
+      });
+    }
+  };
+
+  const deleteCustomerTransaction = (id: string) => {
+    const transaction = customerTransactions.find((t) => t.id === id);
+    if (!transaction) return;
+
+    setCustomerTransactions((prev) => prev.filter((t) => t.id !== id));
+
+    // Reverse the amount from customer totals
+    setCustomers((prev) =>
+      prev.map((c) => {
+        if (c.id !== transaction.customerId) return c;
+        if (transaction.type === 'payment') {
+          const newTotalPaid = c.totalPaid - transaction.amount;
+          return { ...c, totalPaid: newTotalPaid, balance: c.totalCredit - newTotalPaid };
+        } else {
+          const newTotalCredit = c.totalCredit - transaction.amount;
+          return { ...c, totalCredit: newTotalCredit, balance: newTotalCredit - c.totalPaid };
+        }
+      })
+    );
+
+    if (import.meta.env.VITE_SUPABASE_URL) {
+      const customer = customers.find((c) => c.id === transaction.customerId);
+      const ops: Array<PromiseLike<{ error: any }>> = [
+        supabase.from('customer_transactions').delete().eq('id', id),
+      ];
+
+      if (customer) {
+        if (transaction.type === 'payment') {
+          const newTotalPaid = customer.totalPaid - transaction.amount;
+          const newBalance = customer.totalCredit - newTotalPaid;
+          ops.push(
+            supabase.from('customers').update({ total_paid: newTotalPaid, balance: newBalance }).eq('id', transaction.customerId)
+          );
+        } else {
+          const newTotalCredit = customer.totalCredit - transaction.amount;
+          const newBalance = newTotalCredit - customer.totalPaid;
+          ops.push(
+            supabase.from('customers').update({ total_credit: newTotalCredit, balance: newBalance }).eq('id', transaction.customerId)
+          );
+        }
+      }
+
+      void Promise.all(ops).then((results) => {
+        const firstError = results.find((r) => r.error)?.error;
+        if (firstError) {
+          enqueuePendingSync('customer_transaction_delete', { id, transaction }, firstError.message);
+        }
+      });
+    }
+  };
+
   const getCustomerTransactions = (customerId: string) => {
     return customerTransactions.filter((t) => t.customerId === customerId);
   };
@@ -2525,6 +2648,160 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             },
             err?.message
           );
+        }
+      });
+    }
+  };
+
+  const updateSupplierPurchase = (id: string, updates: { amount?: number; description?: string }) => {
+    const oldPurchase = supplierPurchases.find((p) => p.id === id);
+    if (!oldPurchase) return;
+
+    const oldAmount = oldPurchase.amount;
+    const newAmount = updates.amount !== undefined ? updates.amount : oldAmount;
+    const amountDiff = newAmount - oldAmount;
+
+    setSupplierPurchases((prev) =>
+      prev.map((p) => (p.id === id ? { ...p, ...updates } : p))
+    );
+
+    if (amountDiff !== 0) {
+      setSuppliers((prev) =>
+        prev.map((s) => {
+          if (s.id !== oldPurchase.supplierId) return s;
+          
+          let newTotalPurchased = s.totalPurchased;
+          let newTotalPaid = s.totalPaid;
+
+          if (oldPurchase.amount < 0 && newAmount < 0) {
+            newTotalPaid = s.totalPaid - amountDiff; 
+          } else if (oldPurchase.amount >= 0 && newAmount >= 0) {
+            newTotalPurchased = s.totalPurchased + amountDiff;
+          } else {
+            if (oldPurchase.amount < 0) {
+              newTotalPaid = s.totalPaid + oldPurchase.amount; 
+            } else {
+              newTotalPurchased = s.totalPurchased - oldPurchase.amount; 
+            }
+            if (newAmount < 0) {
+              newTotalPaid = newTotalPaid - newAmount; 
+            } else {
+              newTotalPurchased = newTotalPurchased + newAmount; 
+            }
+          }
+
+          return {
+            ...s,
+            totalPurchased: newTotalPurchased,
+            totalPaid: newTotalPaid,
+            balance: newTotalPurchased - newTotalPaid,
+          };
+        })
+      );
+    }
+
+    if (import.meta.env.VITE_SUPABASE_URL) {
+      const dbUpdates: any = {};
+      if (updates.amount !== undefined) dbUpdates.amount = updates.amount;
+      if (updates.description !== undefined) dbUpdates.description = updates.description;
+
+      const ops: Array<PromiseLike<{ error: any }>> = [
+        supabase.from('supplier_purchases').update(dbUpdates).eq('id', id),
+      ];
+
+      if (amountDiff !== 0) {
+        const supplier = suppliers.find((s) => s.id === oldPurchase.supplierId);
+        if (supplier) {
+          let newTotalPurchased = supplier.totalPurchased;
+          let newTotalPaid = supplier.totalPaid;
+
+          if (oldPurchase.amount < 0 && newAmount < 0) {
+            newTotalPaid = supplier.totalPaid - amountDiff; 
+          } else if (oldPurchase.amount >= 0 && newAmount >= 0) {
+            newTotalPurchased = supplier.totalPurchased + amountDiff;
+          } else {
+            if (oldPurchase.amount < 0) {
+              newTotalPaid = supplier.totalPaid + oldPurchase.amount; 
+            } else {
+              newTotalPurchased = supplier.totalPurchased - oldPurchase.amount; 
+            }
+            if (newAmount < 0) {
+              newTotalPaid = newTotalPaid - newAmount; 
+            } else {
+              newTotalPurchased = newTotalPurchased + newAmount; 
+            }
+          }
+
+          const newBalance = newTotalPurchased - newTotalPaid;
+          ops.push(
+            supabase.from('suppliers').update({ total_purchased: newTotalPurchased, total_paid: newTotalPaid, balance: newBalance }).eq('id', oldPurchase.supplierId)
+          );
+        }
+      }
+
+      void Promise.all(ops).then((results) => {
+        const firstError = results.find((r) => r.error)?.error;
+        if (firstError) {
+          enqueuePendingSync('supplier_purchase_update', { id, updates }, firstError.message);
+        }
+      });
+    }
+  };
+
+  const deleteSupplierPurchase = (id: string) => {
+    const purchase = supplierPurchases.find((p) => p.id === id);
+    if (!purchase) return;
+
+    setSupplierPurchases((prev) => prev.filter((p) => p.id !== id));
+
+    setSuppliers((prev) =>
+      prev.map((s) => {
+        if (s.id !== purchase.supplierId) return s;
+
+        let newTotalPurchased = s.totalPurchased;
+        let newTotalPaid = s.totalPaid;
+
+        if (purchase.amount < 0) {
+          newTotalPaid = s.totalPaid + purchase.amount; 
+        } else {
+          newTotalPurchased = s.totalPurchased - purchase.amount;
+        }
+
+        return {
+          ...s,
+          totalPurchased: newTotalPurchased,
+          totalPaid: newTotalPaid,
+          balance: newTotalPurchased - newTotalPaid,
+        };
+      })
+    );
+
+    if (import.meta.env.VITE_SUPABASE_URL) {
+      const supplier = suppliers.find((s) => s.id === purchase.supplierId);
+      const ops: Array<PromiseLike<{ error: any }>> = [
+        supabase.from('supplier_purchases').delete().eq('id', id),
+      ];
+
+      if (supplier) {
+        let newTotalPurchased = supplier.totalPurchased;
+        let newTotalPaid = supplier.totalPaid;
+
+        if (purchase.amount < 0) {
+          newTotalPaid = supplier.totalPaid + purchase.amount; 
+        } else {
+          newTotalPurchased = supplier.totalPurchased - purchase.amount;
+        }
+        const newBalance = newTotalPurchased - newTotalPaid;
+        
+        ops.push(
+          supabase.from('suppliers').update({ total_purchased: newTotalPurchased, total_paid: newTotalPaid, balance: newBalance }).eq('id', purchase.supplierId)
+        );
+      }
+
+      void Promise.all(ops).then((results) => {
+        const firstError = results.find((r) => r.error)?.error;
+        if (firstError) {
+          enqueuePendingSync('supplier_purchase_delete', { id }, firstError.message);
         }
       });
     }
@@ -3035,6 +3312,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         deleteCustomer,
         getCustomerById,
         addCustomerPayment,
+        updateCustomerTransaction,
+        deleteCustomerTransaction,
         getCustomerTransactions,
         addCustomerReminder,
         updateCustomerReminder,
@@ -3050,6 +3329,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         deleteSupplier,
         getSupplierById,
         addSupplierPurchase,
+        updateSupplierPurchase,
+        deleteSupplierPurchase,
         receiveSupplierStock,
         receiveSupplierStockBatch,
         getSupplierPurchases,

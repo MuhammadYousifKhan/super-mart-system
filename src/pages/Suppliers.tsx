@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useStore } from '@/contexts/useStore';
-import { Supplier, ScheduleFrequency } from '@/types/pos';
+import { Supplier, ScheduleFrequency, SupplierPurchase } from '@/types/pos';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -32,7 +32,7 @@ import {
 } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
-import { Building2, Plus, ReceiptText, CalendarClock, CalendarDays, Wrench, CheckCircle2, Printer } from 'lucide-react';
+import { Building2, Plus, ReceiptText, CalendarClock, CalendarDays, Wrench, CheckCircle2, Printer, Trash2, Edit2 } from 'lucide-react';
 
 function formatPKR(amount: number) {
   return `Rs. ${amount.toLocaleString()}`;
@@ -48,6 +48,8 @@ export default function Suppliers() {
     deleteSupplier,
     getSupplierById,
     addSupplierPurchase,
+    updateSupplierPurchase,
+    deleteSupplierPurchase,
     getSupplierPurchases,
     addSupplierPaymentSchedule,
     deleteSupplierPaymentSchedule,
@@ -67,6 +69,9 @@ export default function Suppliers() {
 
   const [supplierDialogOpen, setSupplierDialogOpen] = useState(false);
   const [editingSupplier, setEditingSupplier] = useState<Supplier | null>(null);
+
+  const [editingLedgerEntry, setEditingLedgerEntry] = useState<SupplierPurchase | null>(null);
+  const [ledgerEditForm, setLedgerEditForm] = useState({ amount: '', description: '', isPayment: false });
 
   const [supplierForm, setSupplierForm] = useState({
     name: '',
@@ -216,6 +221,41 @@ export default function Suppliers() {
       amount: '',
       note: '',
     });
+  };
+
+  const openEditLedgerEntry = (purchase: SupplierPurchase) => {
+    setEditingLedgerEntry(purchase);
+    setLedgerEditForm({
+      amount: Math.abs(purchase.amount).toString(),
+      description: purchase.description,
+      isPayment: purchase.amount < 0,
+    });
+  };
+
+  const submitLedgerEdit = () => {
+    if (!editingLedgerEntry) return;
+    const amount = parseFloat(ledgerEditForm.amount);
+    if (isNaN(amount) || amount <= 0) {
+      toast.error('Valid positive amount is required');
+      return;
+    }
+
+    const finalAmount = ledgerEditForm.isPayment ? -amount : amount;
+
+    updateSupplierPurchase(editingLedgerEntry.id, {
+      amount: finalAmount,
+      description: ledgerEditForm.description.trim() || undefined,
+    });
+
+    toast.success('Ledger entry updated');
+    setEditingLedgerEntry(null);
+  };
+
+  const handleDeleteLedgerEntry = (id: string) => {
+    if (window.confirm('Are you sure you want to delete this ledger entry?')) {
+      deleteSupplierPurchase(id);
+      toast.success('Ledger entry deleted');
+    }
   };
 
   const runHealthCheck = () => {
@@ -813,6 +853,7 @@ export default function Suppliers() {
                       <TableHead>Description</TableHead>
                       <TableHead>Invoice</TableHead>
                       <TableHead className="text-right">Amount</TableHead>
+                      <TableHead className="text-right">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -831,6 +872,14 @@ export default function Suppliers() {
                         <TableCell>{purchase.description}</TableCell>
                         <TableCell>{purchase.invoiceNumber || '-'}</TableCell>
                         <TableCell className="text-right">{formatPKR(Math.abs(purchase.amount))}</TableCell>
+                        <TableCell className="text-right space-x-2">
+                          <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => openEditLedgerEntry(purchase)}>
+                            <Edit2 className="h-4 w-4" />
+                          </Button>
+                          <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" onClick={() => handleDeleteLedgerEntry(purchase.id)}>
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -1038,6 +1087,44 @@ export default function Suppliers() {
               <Printer className="h-4 w-4" />
               Print
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!editingLedgerEntry} onOpenChange={(open) => !open && setEditingLedgerEntry(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit Ledger Entry</DialogTitle>
+            <DialogDescription>Update the amount and description for this entry.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>Entry Type</Label>
+              <div className="flex items-center space-x-2">
+                <Badge variant={ledgerEditForm.isPayment ? 'secondary' : 'outline'}>
+                  {ledgerEditForm.isPayment ? 'Payment' : 'Purchase'}
+                </Badge>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>Description</Label>
+              <Input
+                value={ledgerEditForm.description}
+                onChange={(e) => setLedgerEditForm({ ...ledgerEditForm, description: e.target.value })}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Amount</Label>
+              <Input
+                type="number"
+                value={ledgerEditForm.amount}
+                onChange={(e) => setLedgerEditForm({ ...ledgerEditForm, amount: e.target.value })}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditingLedgerEntry(null)}>Cancel</Button>
+            <Button onClick={submitLedgerEdit}>Save Changes</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

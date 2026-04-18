@@ -59,6 +59,7 @@ import {
   BellRing,
   CalendarDays,
   Printer,
+  Pencil,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -72,6 +73,8 @@ export default function Customers() {
     deleteCustomer,
     getCustomerTransactions,
     addCustomerPayment,
+    updateCustomerTransaction,
+    deleteCustomerTransaction,
     addCustomerReminder,
     updateCustomerReminder,
     deleteCustomerReminder,
@@ -112,6 +115,20 @@ export default function Customers() {
   const [reminderFrequency, setReminderFrequency] = useState<ReminderFrequency>('weekly');
   const [nextReminderDate, setNextReminderDate] = useState(new Date().toISOString().slice(0, 10));
   const [reminderNote, setReminderNote] = useState('');
+
+  // Edit transaction dialog state
+  const [showEditTransactionModal, setShowEditTransactionModal] = useState(false);
+  const [editingTransactionId, setEditingTransactionId] = useState<string | null>(null);
+  const [editTransactionForm, setEditTransactionForm] = useState({
+    amount: '',
+    description: '',
+  });
+
+  // Always derive the selected customer from the live customers state
+  // so edits to transactions immediately reflect in the ledger modal & print
+  const liveSelectedCustomer = selectedCustomer
+    ? customers.find((c) => c.id === selectedCustomer.id) || selectedCustomer
+    : null;
 
   const filteredCustomers = customers.filter(
     (customer) =>
@@ -263,6 +280,39 @@ export default function Customers() {
   };
 
   const dueReminders = getDueCustomerReminders();
+
+  // Edit transaction handlers
+  const openEditTransaction = (transaction: CustomerTransaction) => {
+    setEditingTransactionId(transaction.id);
+    setEditTransactionForm({
+      amount: String(transaction.amount),
+      description: transaction.description,
+    });
+    setShowEditTransactionModal(true);
+  };
+
+  const handleEditTransaction = () => {
+    if (!editingTransactionId) return;
+    const amount = parseFloat(editTransactionForm.amount);
+    if (isNaN(amount) || amount <= 0) {
+      toast.error('Please enter a valid amount');
+      return;
+    }
+
+    updateCustomerTransaction(editingTransactionId, {
+      amount,
+      description: editTransactionForm.description.trim(),
+    });
+
+    toast.success('Transaction updated successfully');
+    setShowEditTransactionModal(false);
+    setEditingTransactionId(null);
+  };
+
+  const handleDeleteTransaction = (transactionId: string) => {
+    deleteCustomerTransaction(transactionId);
+    toast.success('Transaction deleted successfully');
+  };
 
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleDateString('en-US', {
@@ -1194,6 +1244,28 @@ export default function Customers() {
                             {transaction.type === 'credit' ? '+' : '-'} Rs.{' '}
                             {transaction.amount.toLocaleString()}
                           </span>
+                          {transaction.type === 'payment' && (
+                            <div className="flex items-center gap-1 ml-2">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7"
+                                onClick={() => openEditTransaction(transaction)}
+                                title="Edit transaction"
+                              >
+                                <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7"
+                                onClick={() => handleDeleteTransaction(transaction.id)}
+                                title="Delete transaction"
+                              >
+                                <Trash2 className="h-3.5 w-3.5 text-red-400" />
+                              </Button>
+                            </div>
+                          )}
                         </div>
                       ))
                   )}
@@ -1458,6 +1530,57 @@ export default function Customers() {
               <Printer className="h-4 w-4" />
               Print
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Transaction Modal */}
+      <Dialog open={showEditTransactionModal} onOpenChange={setShowEditTransactionModal}>
+        <DialogContent className="bg-card border-border">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Pencil className="h-5 w-5" />
+              Edit Transaction
+            </DialogTitle>
+            <DialogDescription>
+              Update the payment amount or description
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label>Amount (Rs.) *</Label>
+              <div className="relative">
+                <DollarSign className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  type="number"
+                  value={editTransactionForm.amount}
+                  onChange={(e) => setEditTransactionForm({ ...editTransactionForm, amount: e.target.value })}
+                  placeholder="Enter amount"
+                  className="pl-10 bg-muted/40 border-border/50"
+                />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>Description</Label>
+              <Input
+                value={editTransactionForm.description}
+                onChange={(e) => setEditTransactionForm({ ...editTransactionForm, description: e.target.value })}
+                placeholder="Payment description"
+                className="bg-muted/40 border-border/50"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setShowEditTransactionModal(false);
+                setEditingTransactionId(null);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleEditTransaction}>Save Changes</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
