@@ -32,7 +32,9 @@ const adminNavItems = [
 
 const cashierNavItems = [
   { path: '/pos', icon: ShoppingCart, label: 'POS Terminal' },
-  { path: '/my-sales', icon: BarChart3, label: 'My Sales' },
+  { path: '/inventory', icon: Package, label: 'Inventory' },
+  { path: '/customers', icon: Users, label: 'Customers' },
+  { path: '/suppliers', icon: Truck, label: 'Suppliers' },
 ];
 
 export function Sidebar() {

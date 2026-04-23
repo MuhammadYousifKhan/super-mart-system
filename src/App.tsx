@@ -37,11 +37,10 @@ function AppRoutes() {
       <Route path="/login" element={user ? <Navigate to="/pos" replace /> : <Login />} />
       <Route path="/" element={<Navigate to="/pos" replace />} />
       <Route path="/pos" element={<ProtectedRoute><AppLayout><POSTerminal /></AppLayout></ProtectedRoute>} />
-      <Route path="/inventory" element={<ProtectedRoute adminOnly><AppLayout><Inventory /></AppLayout></ProtectedRoute>} />
-      <Route path="/customers" element={<ProtectedRoute adminOnly><AppLayout><Customers /></AppLayout></ProtectedRoute>} />
-      <Route path="/suppliers" element={<ProtectedRoute adminOnly><AppLayout><Suppliers /></AppLayout></ProtectedRoute>} />
+      <Route path="/inventory" element={<ProtectedRoute><AppLayout><Inventory /></AppLayout></ProtectedRoute>} />
+      <Route path="/customers" element={<ProtectedRoute><AppLayout><Customers /></AppLayout></ProtectedRoute>} />
+      <Route path="/suppliers" element={<ProtectedRoute><AppLayout><Suppliers /></AppLayout></ProtectedRoute>} />
       <Route path="/analytics" element={<ProtectedRoute adminOnly><AppLayout><Analytics /></AppLayout></ProtectedRoute>} />
-      <Route path="/my-sales" element={<ProtectedRoute><AppLayout><Analytics /></AppLayout></ProtectedRoute>} />
       <Route path="/settings" element={<ProtectedRoute adminOnly><AppLayout><Settings /></AppLayout></ProtectedRoute>} />
       <Route path="*" element={<NotFound />} />
     </Routes>

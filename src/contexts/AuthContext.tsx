@@ -15,6 +15,7 @@ export interface AuthContextType {
   getUsers: () => UserCredentials[];
   createUser: (credentials: Omit<UserCredentials, 'role'> & { role?: UserRole }) => boolean;
   deleteUser: (email: string) => boolean;
+  resetPassword: (email: string) => Promise<boolean>;
 }
 
 // ============================================================
@@ -394,6 +395,45 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   // ----------------------------------------------------------
+  // Reset Password
+  // ----------------------------------------------------------
+  const resetPassword = async (email: string): Promise<boolean> => {
+    setIsLoading(true);
+
+    if (IS_LOCAL_MODE) {
+      const users = getLocalUsers();
+      const userExists = users.find(u => u.email.toLowerCase() === email.toLowerCase());
+      
+      if (userExists) {
+        toast.info(`Local Mode: Password for ${email} is "${userExists.password}"`);
+        setIsLoading(false);
+        return true;
+      } else {
+        toast.error('Email not found in system.');
+        setIsLoading(false);
+        return false;
+      }
+    }
+
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: window.location.origin + '/login',
+      });
+      if (error) {
+        toast.error(error.message);
+        return false;
+      }
+      toast.success('Password reset link sent to your email.');
+      return true;
+    } catch (err) {
+      toast.error('Failed to send reset email. Please try again.');
+      return false;
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // ----------------------------------------------------------
   // User management
   // ----------------------------------------------------------
   const updateCredentials = (oldEmail: string, newCredentials: Partial<UserCredentials>): boolean => {
@@ -464,6 +504,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         getUsers,
         createUser,
         deleteUser,
+        resetPassword,
       }}
     >
       {children}
