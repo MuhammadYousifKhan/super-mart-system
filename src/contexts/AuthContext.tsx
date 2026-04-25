@@ -246,7 +246,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         'color: #f59e0b; font-weight: bold;'
       );
 
-      const savedSession = localStorage.getItem('pos_local_session');
+      const savedSession = sessionStorage.getItem('pos_local_session');
       if (savedSession) {
         try {
           setUser(JSON.parse(savedSession));
@@ -333,7 +333,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           role: match.role,
         };
         setUser(localUser);
-        localStorage.setItem('pos_local_session', JSON.stringify(localUser));
+        sessionStorage.setItem('pos_local_session', JSON.stringify(localUser));
         setIsLoading(false);
         return true;
       } else {
@@ -386,7 +386,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // ----------------------------------------------------------
   const logout = async () => {
     if (IS_LOCAL_MODE) {
-      localStorage.removeItem('pos_local_session');
+      sessionStorage.removeItem('pos_local_session');
       setUser(null);
       return;
     }

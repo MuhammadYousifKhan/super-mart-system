@@ -38,6 +38,8 @@ import {
   Plus,
   Minus,
   User,
+  Eye,
+  Printer,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Order, OrderItem } from '@/types/pos';
@@ -534,10 +536,34 @@ export default function POSTerminal() {
                         <span>Total: {formatPKR(order.totalAmount)}</span>
                       </div>
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex gap-2 flex-wrap justify-end">
+                      <Button 
+                        variant="outline" 
+                        size="sm" 
+                        className="bg-primary/5 hover:bg-primary/10 border-primary/20 text-primary"
+                        onClick={() => {
+                          const items = getOrderItems(order.id);
+                          printOrderReceipt(order, items, settings);
+                        }}
+                      >
+                        <Printer className="w-3.5 h-3.5 mr-1.5" />
+                        Print
+                      </Button>
+                      <Button 
+                        variant="outline" 
+                        size="sm" 
+                        onClick={() => {
+                          setLastOrder(order);
+                          setIsManageBillsDialogOpen(false);
+                          setShowReceipt(true);
+                        }}
+                      >
+                        <Eye className="w-3.5 h-3.5 mr-1.5" />
+                        View
+                      </Button>
                       <Button variant="outline" size="sm" onClick={() => openEditBillDialog(order)}>
                         <Pencil className="w-3.5 h-3.5 mr-1.5" />
-                        Edit Bill
+                        Edit
                       </Button>
                       <Button 
                         variant="destructive" 
@@ -549,7 +575,7 @@ export default function POSTerminal() {
                           }
                         }}
                       >
-                        Cancel Bill
+                        Cancel
                       </Button>
                     </div>
                   </div>
@@ -600,6 +626,7 @@ export default function POSTerminal() {
                       </div>
                       <div className="flex items-center justify-center gap-1">
                         <button
+                          title="Decrease Quantity"
                           className="w-6 h-6 rounded bg-muted hover:bg-muted/80 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
                           onClick={() =>
                             setEditItems((prev) =>
@@ -628,6 +655,7 @@ export default function POSTerminal() {
                           className="w-12 h-7 text-center text-xs p-0 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                         />
                         <button
+                          title="Increase Quantity"
                           className="w-6 h-6 rounded bg-muted hover:bg-muted/80 flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
                           onClick={() =>
                             setEditItems((prev) =>
@@ -674,6 +702,7 @@ export default function POSTerminal() {
                         {formatPKR(item.unitPrice * item.quantity - item.discountAmount)}
                       </span>
                       <button
+                        title="Remove Item"
                         className="w-7 h-7 rounded flex items-center justify-center text-destructive/70 hover:text-destructive hover:bg-destructive/10 transition-colors"
                         onClick={() =>
                           setEditItems((prev) =>
@@ -752,6 +781,7 @@ export default function POSTerminal() {
               <div className="space-y-1">
                 <Label className="text-xs">Payment Method</Label>
                 <select
+                  title="Payment Method"
                   value={editPaymentMethod}
                   onChange={(e) => setEditPaymentMethod(e.target.value)}
                   className="w-full h-9 text-sm rounded-md border border-input bg-background px-3 py-1 text-foreground focus:outline-none focus:ring-2 focus:ring-ring"

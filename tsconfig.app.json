@@ -30,6 +30,7 @@
     "noImplicitAny": false,
     "noFallthroughCasesInSwitch": false,
     "forceConsistentCasingInFileNames": true,
+    "ignoreDeprecations": "6.0",
     "baseUrl": ".",
     "paths": {
       "@/*": [
