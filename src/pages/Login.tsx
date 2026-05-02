@@ -279,7 +279,7 @@ export default function Login() {
           </div>
 
           <h1 className="lg-hero-title">
-            Super<span className="lg-hero-title-accent">Mart</span>
+            POS <span className="lg-hero-title-accent">System Name</span>
           </h1>
 
           <p className="lg-hero-tagline">
@@ -333,7 +333,7 @@ export default function Login() {
                 <path d="M16 10a4 4 0 01-8 0" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
               </svg>
             </div>
-            <span className="lg-mobile-brand-text">SuperMart</span>
+            <span className="lg-mobile-brand-text">POS System Name</span>
           </div>
 
           {/* Greeting */}
@@ -367,7 +367,7 @@ export default function Login() {
                     id="reset-email"
                     type="email"
                     className="lg-input"
-                    placeholder="you@supermart.com"
+                    placeholder="you@pos-system.com"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     onFocus={() => setFocusedField('reset-email')}
@@ -412,7 +412,7 @@ export default function Login() {
                     id="email"
                     type="email"
                     className="lg-input"
-                    placeholder="you@supermart.com"
+                    placeholder="you@pos-system.com"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     onFocus={() => setFocusedField('email')}
@@ -482,7 +482,7 @@ export default function Login() {
           {/* Footer */}
           <div className="lg-footer">
             <div className="lg-footer-line" />
-            <span className="lg-footer-text">SuperMart POS v2.0 — Enterprise Edition</span>
+            <span className="lg-footer-text">POS System Name v2.0 — Enterprise Edition</span>
           </div>
         </div>
       </div>

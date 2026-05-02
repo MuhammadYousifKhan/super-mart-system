@@ -17,6 +17,7 @@ import {
   Users,
   Sun,
   Moon,
+  CloudUpload,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useTheme } from '@/contexts/ThemeContext';
@@ -39,7 +40,7 @@ const cashierNavItems = [
 
 export function Sidebar() {
   const { user, logout, isAdmin } = useAuth();
-  const { settings } = useStore();
+  const { settings, manualSync } = useStore();
   const { theme, toggle } = useTheme();
   const location = useLocation();
   const [isMobileOpen, setIsMobileOpen] = useState(false);
@@ -81,7 +82,7 @@ export function Sidebar() {
             </div>
           )}
           <h1 className="font-bold text-base text-white truncate">
-            {settings.storeName || 'POS System'}
+            {settings.storeName || 'POS System Name'}
           </h1>
         </div>
         <Button
@@ -129,7 +130,7 @@ export function Sidebar() {
           )}
           <div className="flex-1 min-w-0">
             <h1 className="font-bold text-lg tracking-tight text-sidebar-foreground truncate">
-              {settings.storeName || 'POS System'}
+              {settings.storeName || 'POS System Name'}
             </h1>
             <div className="flex items-center gap-1.5">
               <div className="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
@@ -181,6 +182,15 @@ export function Sidebar() {
           </div>
         </div>
         <div className="space-y-2">
+          <Button
+            variant="ghost"
+            className="w-full justify-start text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent transition-all border border-transparent hover:border-border/30 rounded-xl"
+            onClick={() => void manualSync()}
+          >
+            <CloudUpload className="w-4 h-4 mr-3" />
+            Sync to Cloud
+          </Button>
+
           <Button
             variant="ghost"
             className="w-full justify-start text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent transition-all border border-transparent hover:border-border/30 rounded-xl"

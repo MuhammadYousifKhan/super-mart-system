@@ -24,6 +24,7 @@ import { useAuth } from './useAuth';
 import { StoreContext } from './StoreContextValue';
 import { supabase } from '@/lib/supabase';
 import { toast } from 'sonner';
+import { db, saveArrayToDexie, loadArrayFromDexie, saveSettingsToDexie, loadSettingsFromDexie } from '@/db/db';
 
 interface CreateOrderOptions {
   items: CartItem[];
@@ -159,6 +160,7 @@ export interface StoreContextType {
   calculateTotal: () => number;
   calculateItemDiscount: (item: CartItem) => number;
   calculateGlobalDiscountAmount: () => number;
+  manualSync: () => Promise<void>;
 }
 
 type PendingSyncOperationType =
@@ -182,7 +184,12 @@ type PendingSyncOperationType =
   | 'supplier_stock_receive_batch'
   | 'supplier_schedule_add'
   | 'supplier_schedule_update'
-  | 'supplier_schedule_delete';
+  | 'supplier_schedule_delete'
+  | 'supplier_purchase_update'
+  | 'supplier_purchase_delete'
+  | 'product_add'
+  | 'product_update'
+  | 'product_delete';
 
 interface PendingSyncOperation {
   id: string;
@@ -368,6 +375,51 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         );
 
         if (itemsError) throw itemsError;
+        return;
+      }
+
+      case 'product_add': {
+        const payload = op.payload as { newProduct: any };
+        const p = payload.newProduct;
+        const { error } = await supabase.from('products').upsert(
+          {
+            id: p.id,
+            sku: p.sku,
+            name: p.name,
+            description: p.description,
+            category_id: p.categoryId,
+            unit_id: p.unitId,
+            cost_price: p.costPrice,
+            selling_price: p.sellingPrice,
+            stock_quantity: p.stockQuantity,
+            low_stock_threshold: p.lowStockThreshold,
+            expiry_date: p.expiryDate || null,
+            barcode: p.barcode || null,
+            barcode_enabled: p.barcodeEnabled || false,
+          },
+          { onConflict: 'id' }
+        );
+        if (error) throw error;
+        return;
+      }
+
+      case 'product_update': {
+        const payload = op.payload as { id: string; dbUpdates: any };
+        const { error } = await supabase
+          .from('products')
+          .update(payload.dbUpdates)
+          .eq('id', payload.id);
+        if (error) throw error;
+        return;
+      }
+
+      case 'product_delete': {
+        const payload = op.payload as { ids: string[] };
+        const { error } = await supabase
+          .from('products')
+          .delete()
+          .in('id', payload.ids);
+        if (error) throw error;
         return;
       }
 
@@ -854,7 +906,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         // Check if Supabase is configured
         if (!import.meta.env.VITE_SUPABASE_URL) {
           console.warn('Supabase not configured, using local storage fallback');
-          loadFromLocalStorage();
+          await loadFromDexie();
           setLoading(false);
           return;
         }
@@ -1134,27 +1186,36 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           console.error('Error fetching data from Supabase:', error);
           toast.error('Failed to load data from database');
         }
-        loadFromLocalStorage();
+        await loadFromDexie();
       } finally {
         setLoading(false);
       }
     };
 
-    const loadFromLocalStorage = () => {
-      setProducts(loadData('pos_products', SAMPLE_PRODUCTS));
-      setUnits(loadData('pos_units', SAMPLE_UNITS));
-      setCategories(loadData('pos_categories', SAMPLE_CATEGORIES));
-      setOrders(loadData('pos_orders', []));
-      setOrderItems(loadData('pos_order_items', []));
-      setSettings(loadData('pos_settings', DEFAULT_SETTINGS));
-      setHeldCarts(loadData('pos_held_carts', []));
-      setCustomers(loadData('pos_customers', []));
-      setCustomerTransactions(loadData('pos_customer_transactions', []));
-      setCustomerReminders(loadData('pos_customer_reminders', []));
-      setSuppliers(loadData('pos_suppliers', []));
-      setSupplierPurchases(loadData('pos_supplier_purchases', []));
-      setSupplierPaymentSchedules(loadData('pos_supplier_payment_schedules', []));
-      setOrderEditLogs(loadData('pos_order_edit_logs', []));
+    const loadFromDexie = async () => {
+      const dbProducts = await loadArrayFromDexie('products');
+      setProducts(dbProducts.length ? dbProducts : SAMPLE_PRODUCTS);
+      
+      const dbUnits = await loadArrayFromDexie('units');
+      setUnits(dbUnits.length ? dbUnits : SAMPLE_UNITS);
+      
+      const dbCategories = await loadArrayFromDexie('categories');
+      setCategories(dbCategories.length ? dbCategories : SAMPLE_CATEGORIES);
+      
+      setOrders(await loadArrayFromDexie('orders'));
+      setOrderItems(await loadArrayFromDexie('orderItems'));
+      
+      const dbSettings = await loadSettingsFromDexie();
+      setSettings(dbSettings || DEFAULT_SETTINGS);
+      
+      setHeldCarts(await loadArrayFromDexie('heldCarts'));
+      setCustomers(await loadArrayFromDexie('customers'));
+      setCustomerTransactions(await loadArrayFromDexie('customerTransactions'));
+      setCustomerReminders(await loadArrayFromDexie('customerReminders'));
+      setSuppliers(await loadArrayFromDexie('suppliers'));
+      setSupplierPurchases(await loadArrayFromDexie('supplierPurchases'));
+      setSupplierPaymentSchedules(await loadArrayFromDexie('supplierPaymentSchedules'));
+      setOrderEditLogs(await loadArrayFromDexie('orderEditLogs'));
     };
 
     fetchData();
@@ -1186,51 +1247,51 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   // Save held carts to localStorage (keep local)
   useEffect(() => {
-    localStorage.setItem('pos_held_carts', JSON.stringify(heldCarts));
+    void saveArrayToDexie('heldCarts', heldCarts);
   }, [heldCarts]);
 
   // Persist reference/inventory data locally as a durability fallback even when Supabase is configured.
   // This prevents data loss on refresh if a Supabase table is missing/misconfigured.
   useEffect(() => {
-    localStorage.setItem('pos_products', JSON.stringify(products));
+    void saveArrayToDexie('products', products);
   }, [products]);
 
   useEffect(() => {
-    localStorage.setItem('pos_units', JSON.stringify(units));
+    void saveArrayToDexie('units', units);
   }, [units]);
 
   useEffect(() => {
-    localStorage.setItem('pos_categories', JSON.stringify(categories));
+    void saveArrayToDexie('categories', categories);
   }, [categories]);
 
   // Save customers to localStorage
   useEffect(() => {
-    localStorage.setItem('pos_customers', JSON.stringify(customers));
+    void saveArrayToDexie('customers', customers);
   }, [customers]);
 
   // Save customer transactions to localStorage
   useEffect(() => {
-    localStorage.setItem('pos_customer_transactions', JSON.stringify(customerTransactions));
+    void saveArrayToDexie('customerTransactions', customerTransactions);
   }, [customerTransactions]);
 
   // Save customer reminders to localStorage
   useEffect(() => {
-    localStorage.setItem('pos_customer_reminders', JSON.stringify(customerReminders));
+    void saveArrayToDexie('customerReminders', customerReminders);
   }, [customerReminders]);
 
   // Save suppliers to localStorage
   useEffect(() => {
-    localStorage.setItem('pos_suppliers', JSON.stringify(suppliers));
+    void saveArrayToDexie('suppliers', suppliers);
   }, [suppliers]);
 
   // Save supplier purchases to localStorage
   useEffect(() => {
-    localStorage.setItem('pos_supplier_purchases', JSON.stringify(supplierPurchases));
+    void saveArrayToDexie('supplierPurchases', supplierPurchases);
   }, [supplierPurchases]);
 
   // Save supplier payment schedules to localStorage
   useEffect(() => {
-    localStorage.setItem('pos_supplier_payment_schedules', JSON.stringify(supplierPaymentSchedules));
+    void saveArrayToDexie('supplierPaymentSchedules', supplierPaymentSchedules);
   }, [supplierPaymentSchedules]);
 
   // Product functions
@@ -1259,11 +1320,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
       if (error) {
         console.error('Error adding product:', error);
-        toast.error('Failed to save product to database');
-        // Revert optimistic update? Or just let it be local for now.
+        const message = error.message || 'Failed to save product to database';
+        enqueuePendingSync('product_add', { newProduct }, message);
       }
     } else {
-      localStorage.setItem('pos_products', JSON.stringify([...products, newProduct]));
+      void saveArrayToDexie('products', [...products, newProduct]);
     }
   };
 
@@ -1310,12 +1371,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         if (looksLikeSchemaIssue) {
           toast.error('Database schema is missing tables/columns. Run SUPABASE_SETUP.sql, then refresh Supabase schema cache.');
         } else {
-          toast.error('Failed to update product in database');
+          enqueuePendingSync('product_update', { id, dbUpdates }, error.message || 'Failed to update product');
         }
       }
     } else {
       const updatedProducts = products.map((p) => (p.id === id ? { ...p, ...updates } : p));
-      localStorage.setItem('pos_products', JSON.stringify(updatedProducts));
+      void saveArrayToDexie('products', updatedProducts);
     }
   };
 
@@ -1331,11 +1392,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
       if (error) {
         console.error('Error deleting products:', error);
-        toast.error('Failed to delete products from database');
+        enqueuePendingSync('product_delete', { ids }, error.message || 'Failed to delete products');
       }
     } else {
       const remainingProducts = products.filter((p) => !ids.includes(p.id));
-      localStorage.setItem('pos_products', JSON.stringify(remainingProducts));
+      void saveArrayToDexie('products', remainingProducts);
     }
   };
 
@@ -1360,7 +1421,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         }
       }
     } else {
-      localStorage.setItem('pos_units', JSON.stringify([...units, newUnit]));
+      void saveArrayToDexie('units', [...units, newUnit]);
     }
   };
 
@@ -1382,7 +1443,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       }
     } else {
       const updatedUnits = units.map((u) => (u.id === id ? { ...u, ...updates } : u));
-      localStorage.setItem('pos_units', JSON.stringify(updatedUnits));
+      void saveArrayToDexie('units', updatedUnits);
     }
   };
 
@@ -1397,7 +1458,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       }
     } else {
       const remainingUnits = units.filter((u) => u.id !== id);
-      localStorage.setItem('pos_units', JSON.stringify(remainingUnits));
+      void saveArrayToDexie('units', remainingUnits);
     }
   };
 
@@ -1417,7 +1478,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         toast.error('Failed to save category');
       }
     } else {
-      localStorage.setItem('pos_categories', JSON.stringify([...categories, newCategory]));
+      void saveArrayToDexie('categories', [...categories, newCategory]);
     }
   };
 
@@ -1434,7 +1495,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       }
     } else {
       const updatedCategories = categories.map((c) => (c.id === id ? { ...c, ...updates } : c));
-      localStorage.setItem('pos_categories', JSON.stringify(updatedCategories));
+      void saveArrayToDexie('categories', updatedCategories);
     }
   };
 
@@ -1449,7 +1510,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       }
     } else {
       const remainingCategories = categories.filter((c) => c.id !== id);
-      localStorage.setItem('pos_categories', JSON.stringify(remainingCategories));
+      void saveArrayToDexie('categories', remainingCategories);
     }
   };
 
@@ -1663,8 +1724,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         enqueuePendingSync('order_with_items', { order, orderItems: newOrderItems }, message);
       }
     } else {
-      localStorage.setItem('pos_orders', JSON.stringify([order, ...orders]));
-      localStorage.setItem('pos_order_items', JSON.stringify([...orderItems, ...newOrderItems]));
+      void saveArrayToDexie('orders', [order, ...orders]);
+      void saveArrayToDexie('orderItems', [...orderItems, ...newOrderItems]);
     }
 
     return order;
@@ -1700,7 +1761,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       }
     } else {
       const updatedOrders = orders.map((o) => (o.id === id ? { ...o, ...updates } : o));
-      localStorage.setItem('pos_orders', JSON.stringify(updatedOrders));
+      void saveArrayToDexie('orders', updatedOrders);
     }
   };
 
@@ -2088,10 +2149,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       }
     } else {
       const allOrders = orders.map((o) => (o.id === id ? { ...o, ...orderUpdate } : o));
-      localStorage.setItem('pos_orders', JSON.stringify(allOrders));
+      void saveArrayToDexie('orders', allOrders);
       const allItems = orderItems.filter((item) => item.orderId !== id).concat(newOrderItems);
-      localStorage.setItem('pos_order_items', JSON.stringify(allItems));
-      localStorage.setItem('pos_order_edit_logs', JSON.stringify(updatedLogs));
+      void saveArrayToDexie('orderItems', allItems);
+      void saveArrayToDexie('orderEditLogs', updatedLogs);
     }
 
     toast.success('Bill updated successfully');
@@ -2126,7 +2187,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       }
     } else {
       const newSettings = { ...settings, ...updates };
-      localStorage.setItem('pos_settings', JSON.stringify(newSettings));
+      void saveSettingsToDexie(newSettings);
     }
   };
 
@@ -3287,6 +3348,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  
+  const manualSync = useCallback(async () => {
+    if (!import.meta.env.VITE_SUPABASE_URL) {
+      toast.error('Supabase is not configured.');
+      return;
+    }
+    toast.info('Syncing local data to Supabase...');
+    await processPendingSyncQueue();
+    toast.success('Sync completed. Refreshing data...');
+    setTimeout(() => {
+      window.location.reload();
+    }, 1500);
+  }, [processPendingSyncQueue]);
+
   return (
     <StoreContext.Provider
       value={{
@@ -3369,6 +3444,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         calculateTotal,
         calculateItemDiscount,
         calculateGlobalDiscountAmount,
+        manualSync,
       }}
     >
       {children}
