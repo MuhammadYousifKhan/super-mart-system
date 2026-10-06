@@ -200,6 +200,12 @@ interface PendingSyncOperation {
   lastError?: string;
 }
 
+interface SyncResult {
+  synced: number;
+  failed: number;
+  reason?: 'offline' | 'signed-out' | 'unconfigured';
+}
+
 const DEFAULT_SETTINGS: StoreSettings = {
   storeName: 'My Store',
   address: '123 Main Street, City',
@@ -305,8 +311,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [orderEditLogs, setOrderEditLogs] = useState<OrderEditLog[]>([]);
   const [pendingSyncOps, setPendingSyncOps] = useState<PendingSyncOperation[]>(() => loadPendingSyncQueue());
   const [loading, setLoading] = useState(true);
-  const isProcessingPendingSync = useRef(false);
+  // Local (IndexedDB) copies are only written once the initial load has finished,
+  // otherwise the empty startup state would wipe them before they are read.
+  const [isHydrated, setIsHydrated] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
   const pendingSyncTimer = useRef<number | null>(null);
+  // The queue is read through refs so retry timers and in-flight runs never act on a stale copy.
+  const pendingSyncOpsRef = useRef<PendingSyncOperation[]>(pendingSyncOps);
+  pendingSyncOpsRef.current = pendingSyncOps;
+  const processingRef = useRef<Promise<SyncResult> | null>(null);
+  const processQueueRef = useRef<() => Promise<SyncResult>>(async () => ({ synced: 0, failed: 0 }));
 
   const enqueuePendingSync = useCallback(
     (type: PendingSyncOperationType, payload: any, errorMessage?: string) => {
@@ -839,65 +853,179 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         if (error) throw error;
         return;
       }
+
+      case 'customer_transaction_update': {
+        const payload = op.payload as {
+          id: string;
+          dbUpdates?: Record<string, unknown>;
+          updates?: { amount?: number; description?: string };
+          customerId?: string;
+          customerUpdates?: Record<string, unknown>;
+        };
+        // `updates` is the payload shape written by older app versions.
+        const txUpdates: Record<string, unknown> = payload.dbUpdates ?? {};
+        if (!payload.dbUpdates && payload.updates) {
+          if (payload.updates.amount !== undefined) txUpdates.amount = payload.updates.amount;
+          if (payload.updates.description !== undefined) txUpdates.description = payload.updates.description;
+        }
+
+        const ops: Array<PromiseLike<{ error: unknown }>> = [];
+        if (Object.keys(txUpdates).length > 0) {
+          ops.push(supabase.from('customer_transactions').update(txUpdates).eq('id', payload.id));
+        }
+        if (payload.customerId && payload.customerUpdates) {
+          ops.push(supabase.from('customers').update(payload.customerUpdates).eq('id', payload.customerId));
+        }
+        const firstError = (await Promise.all(ops)).find((r) => r.error)?.error;
+        if (firstError) throw firstError;
+        return;
+      }
+
+      case 'customer_transaction_delete': {
+        const payload = op.payload as {
+          id: string;
+          customerId?: string;
+          customerUpdates?: Record<string, unknown>;
+        };
+        const ops: Array<PromiseLike<{ error: unknown }>> = [
+          supabase.from('customer_transactions').delete().eq('id', payload.id),
+        ];
+        if (payload.customerId && payload.customerUpdates) {
+          ops.push(supabase.from('customers').update(payload.customerUpdates).eq('id', payload.customerId));
+        }
+        const firstError = (await Promise.all(ops)).find((r) => r.error)?.error;
+        if (firstError) throw firstError;
+        return;
+      }
+
+      case 'supplier_purchase_update': {
+        const payload = op.payload as {
+          id: string;
+          dbUpdates?: Record<string, unknown>;
+          updates?: { amount?: number; description?: string };
+          supplierId?: string;
+          supplierUpdates?: Record<string, unknown>;
+        };
+        const purchaseUpdates: Record<string, unknown> = payload.dbUpdates ?? {};
+        if (!payload.dbUpdates && payload.updates) {
+          if (payload.updates.amount !== undefined) purchaseUpdates.amount = payload.updates.amount;
+          if (payload.updates.description !== undefined) purchaseUpdates.description = payload.updates.description;
+        }
+
+        const ops: Array<PromiseLike<{ error: unknown }>> = [];
+        if (Object.keys(purchaseUpdates).length > 0) {
+          ops.push(supabase.from('supplier_purchases').update(purchaseUpdates).eq('id', payload.id));
+        }
+        if (payload.supplierId && payload.supplierUpdates) {
+          ops.push(supabase.from('suppliers').update(payload.supplierUpdates).eq('id', payload.supplierId));
+        }
+        const firstError = (await Promise.all(ops)).find((r) => r.error)?.error;
+        if (firstError) throw firstError;
+        return;
+      }
+
+      case 'supplier_purchase_delete': {
+        const payload = op.payload as {
+          id: string;
+          supplierId?: string;
+          supplierUpdates?: Record<string, unknown>;
+        };
+        const ops: Array<PromiseLike<{ error: unknown }>> = [
+          supabase.from('supplier_purchases').delete().eq('id', payload.id),
+        ];
+        if (payload.supplierId && payload.supplierUpdates) {
+          ops.push(supabase.from('suppliers').update(payload.supplierUpdates).eq('id', payload.supplierId));
+        }
+        const firstError = (await Promise.all(ops)).find((r) => r.error)?.error;
+        if (firstError) throw firstError;
+        return;
+      }
+
+      default:
+        // Never report an operation we cannot run as synced: keep it queued with a visible error.
+        throw new Error(`Unknown sync operation: ${String((op as { type: string }).type)}`);
     }
   }, []);
 
-  const processPendingSyncQueue = useCallback(async () => {
-    if (!import.meta.env.VITE_SUPABASE_URL) return;
-    if (!user) return; // RLS only allows signed-in users to write
-    if (pendingSyncOps.length === 0) return;
-    if (isProcessingPendingSync.current) return;
-    if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+  const processPendingSyncQueue = useCallback((): Promise<SyncResult> => {
+    if (!import.meta.env.VITE_SUPABASE_URL) {
+      return Promise.resolve({ synced: 0, failed: 0, reason: 'unconfigured' });
+    }
+    if (!user) {
+      // RLS only allows signed-in users to write.
+      return Promise.resolve({ synced: 0, failed: 0, reason: 'signed-out' });
+    }
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      return Promise.resolve({ synced: 0, failed: pendingSyncOpsRef.current.length, reason: 'offline' });
+    }
+    // Join a run that is already in progress so callers can wait for it instead of skipping.
+    if (processingRef.current) return processingRef.current;
 
-    isProcessingPendingSync.current = true;
-    let successCount = 0;
-    const remainingOps: PendingSyncOperation[] = [];
+    const run = async (): Promise<SyncResult> => {
+      const snapshot = [...pendingSyncOpsRef.current];
+      if (snapshot.length === 0) return { synced: 0, failed: 0 };
 
-    for (const op of pendingSyncOps) {
-      try {
-        await executePendingSyncOperation(op);
-        successCount += 1;
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unknown sync error';
-        remainingOps.push({
-          ...op,
-          retryCount: op.retryCount + 1,
-          lastError: message,
-        });
+      const succeeded = new Set<string>();
+      const failures = new Map<string, { retryCount: number; lastError: string }>();
+
+      for (const op of snapshot) {
+        try {
+          await executePendingSyncOperation(op);
+          succeeded.add(op.id);
+        } catch (error) {
+          const message =
+            error instanceof Error
+              ? error.message
+              : typeof error === 'object' && error !== null && 'message' in error
+                ? String((error as { message: unknown }).message)
+                : 'Unknown sync error';
+          failures.set(op.id, { retryCount: op.retryCount + 1, lastError: message });
+        }
       }
-    }
 
-    setPendingSyncOps(remainingOps);
-    isProcessingPendingSync.current = false;
+      // Functional update so changes queued while this run was in flight are kept.
+      setPendingSyncOps((prev) =>
+        prev
+          .filter((op) => !succeeded.has(op.id))
+          .map((op) => {
+            const failure = failures.get(op.id);
+            return failure ? { ...op, ...failure } : op;
+          })
+      );
 
-    if (successCount > 0) {
-      toast.success(`Synced ${successCount} pending changes to database.`);
-    }
-
-    if (remainingOps.length > 0) {
-      const maxRetryCount = Math.max(...remainingOps.map((op) => op.retryCount));
-      const delayMs = Math.min(60000, 5000 * Math.max(1, maxRetryCount));
-      if (pendingSyncTimer.current !== null) {
-        window.clearTimeout(pendingSyncTimer.current);
+      if (succeeded.size > 0) {
+        toast.success(`Synced ${succeeded.size} pending changes to database.`);
       }
-      pendingSyncTimer.current = window.setTimeout(() => {
-        void processPendingSyncQueue();
-      }, delayMs);
-    }
-  }, [executePendingSyncOperation, pendingSyncOps, user]);
+
+      const snapshotIds = new Set(snapshot.map((op) => op.id));
+      const queuedDuringRun = pendingSyncOpsRef.current.some((op) => !snapshotIds.has(op.id));
+      if (failures.size > 0 || queuedDuringRun) {
+        const maxRetryCount = Math.max(0, ...Array.from(failures.values(), (f) => f.retryCount));
+        const delayMs = Math.min(60000, 5000 * Math.max(1, maxRetryCount));
+        if (pendingSyncTimer.current !== null) {
+          window.clearTimeout(pendingSyncTimer.current);
+        }
+        pendingSyncTimer.current = window.setTimeout(() => {
+          void processQueueRef.current();
+        }, delayMs);
+      }
+
+      return { synced: succeeded.size, failed: failures.size };
+    };
+
+    const promise = run().finally(() => {
+      processingRef.current = null;
+    });
+    processingRef.current = promise;
+    return promise;
+  }, [executePendingSyncOperation, user]);
+  processQueueRef.current = processPendingSyncQueue;
 
   // Load data from Supabase
   useEffect(() => {
-    const loadData = <T,>(key: string, defaultValue: T): T => {
-      const saved = localStorage.getItem(key);
-      if (saved) {
-        try {
-          return JSON.parse(saved);
-        } catch {
-          return defaultValue;
-        }
-      }
-      return defaultValue;
+    const loadUnitsFallback = async (): Promise<Unit[]> => {
+      const saved = await loadArrayFromDexie('units');
+      return saved.length ? saved : SAMPLE_UNITS;
     };
 
     const fetchData = async () => {
@@ -918,6 +1046,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           return;
         }
 
+        // Push local changes first so the fetch below doesn't overwrite them with older server data.
+        await processPendingSyncQueue();
+
         // Fetch Categories
         const { data: categoriesData, error: categoriesError } = await supabase
           .from('categories')
@@ -933,12 +1064,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
         if (unitsError) {
           console.warn('Units not available yet:', unitsError.message);
-          setUnits(loadData('pos_units', SAMPLE_UNITS));
+          setUnits(await loadUnitsFallback());
         } else if (unitsData && unitsData.length > 0) {
           setUnits(unitsData);
         } else {
           // If the table exists but is empty, fall back to locally stored/sample units
-          setUnits(loadData('pos_units', SAMPLE_UNITS));
+          setUnits(await loadUnitsFallback());
         }
 
         // Fetch Products
@@ -1027,11 +1158,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             address: settingsData.address,
             phone: settingsData.phone,
             taxRate: settingsData.tax_rate,
-            cardFeePercent: settings.cardFeePercent,
+            cardFeePercent: settingsData.card_fee_percent ?? DEFAULT_SETTINGS.cardFeePercent,
             receiptFooterMessage: settingsData.receipt_footer_message,
             allowNegativeStock: settingsData.allow_negative_stock,
             logo: settingsData.logo,
           });
+        } else {
+          const localSettings = await loadSettingsFromDexie();
+          if (localSettings) setSettings({ ...DEFAULT_SETTINGS, ...localSettings });
         }
 
         // Fetch Customers
@@ -1172,6 +1306,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           );
         }
 
+        // These two are not stored in Supabase, so they always come from the local database.
+        setHeldCarts(await loadArrayFromDexie('heldCarts'));
+        setOrderEditLogs(await loadArrayFromDexie('orderEditLogs'));
+        setIsHydrated(true);
       } catch (error) {
         const rawMessage =
           error instanceof Error
@@ -1209,11 +1347,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       const dbCategories = await loadArrayFromDexie('categories');
       setCategories(dbCategories.length ? dbCategories : SAMPLE_CATEGORIES);
       
-      setOrders(await loadArrayFromDexie('orders'));
+      const dbOrders: Order[] = await loadArrayFromDexie('orders');
+      setOrders(dbOrders.sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
       setOrderItems(await loadArrayFromDexie('orderItems'));
       
       const dbSettings = await loadSettingsFromDexie();
-      setSettings(dbSettings || DEFAULT_SETTINGS);
+      setSettings(dbSettings ? { ...DEFAULT_SETTINGS, ...dbSettings } : DEFAULT_SETTINGS);
       
       setHeldCarts(await loadArrayFromDexie('heldCarts'));
       setCustomers(await loadArrayFromDexie('customers'));
@@ -1223,20 +1362,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setSupplierPurchases(await loadArrayFromDexie('supplierPurchases'));
       setSupplierPaymentSchedules(await loadArrayFromDexie('supplierPaymentSchedules'));
       setOrderEditLogs(await loadArrayFromDexie('orderEditLogs'));
+      setIsHydrated(true);
     };
 
     fetchData();
-  }, [user?.id]);
+  }, [user?.id, refreshKey]);
 
   useEffect(() => {
     localStorage.setItem(PENDING_SYNC_STORAGE_KEY, JSON.stringify(pendingSyncOps));
   }, [pendingSyncOps]);
-
-  useEffect(() => {
-    if (!import.meta.env.VITE_SUPABASE_URL) return;
-    if (pendingSyncOps.length === 0) return;
-    void processPendingSyncQueue();
-  }, [user?.id]);
 
   useEffect(() => {
     const handleOnline = () => {
@@ -1244,62 +1378,98 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     };
 
     window.addEventListener('online', handleOnline);
-    return () => {
-      window.removeEventListener('online', handleOnline);
+    return () => window.removeEventListener('online', handleOnline);
+  }, [processPendingSyncQueue]);
+
+  // Cancel a scheduled retry when the provider unmounts.
+  useEffect(
+    () => () => {
       if (pendingSyncTimer.current !== null) {
         window.clearTimeout(pendingSyncTimer.current);
       }
-    };
-  }, [processPendingSyncQueue]);
+    },
+    []
+  );
 
   // Save held carts to localStorage (keep local)
   useEffect(() => {
+    if (!isHydrated) return;
     void saveArrayToDexie('heldCarts', heldCarts);
-  }, [heldCarts]);
+  }, [heldCarts, isHydrated]);
 
   // Persist reference/inventory data locally as a durability fallback even when Supabase is configured.
   // This prevents data loss on refresh if a Supabase table is missing/misconfigured.
   useEffect(() => {
+    if (!isHydrated) return;
     void saveArrayToDexie('products', products);
-  }, [products]);
+  }, [products, isHydrated]);
 
   useEffect(() => {
+    if (!isHydrated) return;
     void saveArrayToDexie('units', units);
-  }, [units]);
+  }, [units, isHydrated]);
 
   useEffect(() => {
+    if (!isHydrated) return;
     void saveArrayToDexie('categories', categories);
-  }, [categories]);
+  }, [categories, isHydrated]);
 
   // Save customers to localStorage
   useEffect(() => {
+    if (!isHydrated) return;
     void saveArrayToDexie('customers', customers);
-  }, [customers]);
+  }, [customers, isHydrated]);
 
   // Save customer transactions to localStorage
   useEffect(() => {
+    if (!isHydrated) return;
     void saveArrayToDexie('customerTransactions', customerTransactions);
-  }, [customerTransactions]);
+  }, [customerTransactions, isHydrated]);
 
   // Save customer reminders to localStorage
   useEffect(() => {
+    if (!isHydrated) return;
     void saveArrayToDexie('customerReminders', customerReminders);
-  }, [customerReminders]);
+  }, [customerReminders, isHydrated]);
 
   // Save suppliers to localStorage
   useEffect(() => {
+    if (!isHydrated) return;
     void saveArrayToDexie('suppliers', suppliers);
-  }, [suppliers]);
+  }, [suppliers, isHydrated]);
 
   // Save supplier purchases to localStorage
   useEffect(() => {
+    if (!isHydrated) return;
     void saveArrayToDexie('supplierPurchases', supplierPurchases);
-  }, [supplierPurchases]);
+  }, [supplierPurchases, isHydrated]);
 
   // Save supplier payment schedules to localStorage
   useEffect(() => {
+    if (!isHydrated) return;
     void saveArrayToDexie('supplierPaymentSchedules', supplierPaymentSchedules);
-  }, [supplierPaymentSchedules]);
+  }, [supplierPaymentSchedules, isHydrated]);
+
+  // Sales history, bill-edit history and settings are also kept locally so the app can start offline.
+  useEffect(() => {
+    if (!isHydrated) return;
+    void saveArrayToDexie('orders', orders);
+  }, [orders, isHydrated]);
+
+  useEffect(() => {
+    if (!isHydrated) return;
+    void saveArrayToDexie('orderItems', orderItems);
+  }, [orderItems, isHydrated]);
+
+  useEffect(() => {
+    if (!isHydrated) return;
+    void saveArrayToDexie('orderEditLogs', orderEditLogs);
+  }, [orderEditLogs, isHydrated]);
+
+  useEffect(() => {
+    if (!isHydrated) return;
+    void saveSettingsToDexie(settings);
+  }, [settings, isHydrated]);
 
   // Product functions
   const addProduct = async (product: Omit<Product, 'id'>) => {
@@ -2393,6 +2563,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       if (updates.amount !== undefined) dbUpdates.amount = updates.amount;
       if (updates.description !== undefined) dbUpdates.description = updates.description;
 
+      let customerUpdates: Record<string, unknown> | undefined;
       const ops: Array<PromiseLike<{ error: any }>> = [
         supabase.from('customer_transactions').update(dbUpdates).eq('id', id),
       ];
@@ -2403,15 +2574,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           if (oldTransaction.type === 'payment') {
             const newTotalPaid = customer.totalPaid + amountDiff;
             const newBalance = customer.totalCredit - newTotalPaid;
-            ops.push(
-              supabase.from('customers').update({ total_paid: newTotalPaid, balance: newBalance }).eq('id', oldTransaction.customerId)
-            );
+            customerUpdates = { total_paid: newTotalPaid, balance: newBalance };
+            ops.push(supabase.from('customers').update(customerUpdates).eq('id', oldTransaction.customerId));
           } else {
             const newTotalCredit = customer.totalCredit + amountDiff;
             const newBalance = newTotalCredit - customer.totalPaid;
-            ops.push(
-              supabase.from('customers').update({ total_credit: newTotalCredit, balance: newBalance }).eq('id', oldTransaction.customerId)
-            );
+            customerUpdates = { total_credit: newTotalCredit, balance: newBalance };
+            ops.push(supabase.from('customers').update(customerUpdates).eq('id', oldTransaction.customerId));
           }
         }
       }
@@ -2419,7 +2588,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       void Promise.all(ops).then((results) => {
         const firstError = results.find((r) => r.error)?.error;
         if (firstError) {
-          enqueuePendingSync('customer_transaction_update', { id, updates, amountDiff }, firstError.message);
+          enqueuePendingSync('customer_transaction_update', { id, dbUpdates, customerId: oldTransaction.customerId, customerUpdates }, firstError.message);
         }
       });
     }
@@ -2447,6 +2616,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
     if (import.meta.env.VITE_SUPABASE_URL) {
       const customer = customers.find((c) => c.id === transaction.customerId);
+      let customerUpdates: Record<string, unknown> | undefined;
       const ops: Array<PromiseLike<{ error: any }>> = [
         supabase.from('customer_transactions').delete().eq('id', id),
       ];
@@ -2455,22 +2625,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         if (transaction.type === 'payment') {
           const newTotalPaid = customer.totalPaid - transaction.amount;
           const newBalance = customer.totalCredit - newTotalPaid;
-          ops.push(
-            supabase.from('customers').update({ total_paid: newTotalPaid, balance: newBalance }).eq('id', transaction.customerId)
-          );
+          customerUpdates = { total_paid: newTotalPaid, balance: newBalance };
+          ops.push(supabase.from('customers').update(customerUpdates).eq('id', transaction.customerId));
         } else {
           const newTotalCredit = customer.totalCredit - transaction.amount;
           const newBalance = newTotalCredit - customer.totalPaid;
-          ops.push(
-            supabase.from('customers').update({ total_credit: newTotalCredit, balance: newBalance }).eq('id', transaction.customerId)
-          );
+          customerUpdates = { total_credit: newTotalCredit, balance: newBalance };
+          ops.push(supabase.from('customers').update(customerUpdates).eq('id', transaction.customerId));
         }
       }
 
       void Promise.all(ops).then((results) => {
         const firstError = results.find((r) => r.error)?.error;
         if (firstError) {
-          enqueuePendingSync('customer_transaction_delete', { id, transaction }, firstError.message);
+          enqueuePendingSync('customer_transaction_delete', { id, customerId: transaction.customerId, customerUpdates }, firstError.message);
         }
       });
     }
@@ -2773,6 +2941,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       if (updates.amount !== undefined) dbUpdates.amount = updates.amount;
       if (updates.description !== undefined) dbUpdates.description = updates.description;
 
+      let supplierUpdates: Record<string, unknown> | undefined;
       const ops: Array<PromiseLike<{ error: any }>> = [
         supabase.from('supplier_purchases').update(dbUpdates).eq('id', id),
       ];
@@ -2801,16 +2970,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           }
 
           const newBalance = newTotalPurchased - newTotalPaid;
-          ops.push(
-            supabase.from('suppliers').update({ total_purchased: newTotalPurchased, total_paid: newTotalPaid, balance: newBalance }).eq('id', oldPurchase.supplierId)
-          );
+          supplierUpdates = { total_purchased: newTotalPurchased, total_paid: newTotalPaid, balance: newBalance };
+          ops.push(supabase.from('suppliers').update(supplierUpdates).eq('id', oldPurchase.supplierId));
         }
       }
 
       void Promise.all(ops).then((results) => {
         const firstError = results.find((r) => r.error)?.error;
         if (firstError) {
-          enqueuePendingSync('supplier_purchase_update', { id, updates }, firstError.message);
+          enqueuePendingSync('supplier_purchase_update', { id, dbUpdates, supplierId: oldPurchase.supplierId, supplierUpdates }, firstError.message);
         }
       });
     }
@@ -2846,6 +3014,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
     if (import.meta.env.VITE_SUPABASE_URL) {
       const supplier = suppliers.find((s) => s.id === purchase.supplierId);
+      let supplierUpdates: Record<string, unknown> | undefined;
       const ops: Array<PromiseLike<{ error: any }>> = [
         supabase.from('supplier_purchases').delete().eq('id', id),
       ];
@@ -2861,15 +3030,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         }
         const newBalance = newTotalPurchased - newTotalPaid;
         
-        ops.push(
-          supabase.from('suppliers').update({ total_purchased: newTotalPurchased, total_paid: newTotalPaid, balance: newBalance }).eq('id', purchase.supplierId)
-        );
+        supplierUpdates = { total_purchased: newTotalPurchased, total_paid: newTotalPaid, balance: newBalance };
+        
+        ops.push(supabase.from('suppliers').update(supplierUpdates).eq('id', purchase.supplierId));
       }
 
       void Promise.all(ops).then((results) => {
         const firstError = results.find((r) => r.error)?.error;
         if (firstError) {
-          enqueuePendingSync('supplier_purchase_delete', { id }, firstError.message);
+          enqueuePendingSync('supplier_purchase_delete', { id, supplierId: purchase.supplierId, supplierUpdates }, firstError.message);
         }
       });
     }
@@ -3361,13 +3530,35 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       toast.error('Supabase is not configured.');
       return;
     }
-    toast.info('Syncing local data to Supabase...');
-    await processPendingSyncQueue();
-    toast.success('Sync completed. Refreshing data...');
-    setTimeout(() => {
-      window.location.reload();
-    }, 1500);
-  }, [processPendingSyncQueue]);
+    if (!user) {
+      toast.error('Sign in to sync.');
+      return;
+    }
+    const pending = pendingSyncOpsRef.current.length;
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      toast.error(
+        pending > 0
+          ? `You are offline. ${pending} change${pending === 1 ? '' : 's'} saved on this device, waiting to sync.`
+          : 'You are offline.'
+      );
+      return;
+    }
+
+    const toastId = toast.loading(pending > 0 ? `Syncing ${pending} pending changes...` : 'Checking for updates...');
+    const result = await processPendingSyncQueue();
+    toast.dismiss(toastId);
+
+    if (result.failed > 0) {
+      toast.error(
+        `${result.failed} change${result.failed === 1 ? '' : 's'} could not be synced yet. They stay saved on this device and will retry automatically.`
+      );
+      return;
+    }
+
+    // Everything is on the server: reload from it without resetting the open cart.
+    setRefreshKey((k) => k + 1);
+    if (result.synced === 0) toast.success('Everything is up to date.');
+  }, [processPendingSyncQueue, user]);
 
   return (
     <StoreContext.Provider
