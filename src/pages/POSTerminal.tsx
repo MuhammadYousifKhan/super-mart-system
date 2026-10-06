@@ -186,11 +186,27 @@ export default function POSTerminal() {
     searchInputRef.current?.focus();
   };
 
+  const latestRef = useRef({ getOrderItems, settings });
+  latestRef.current = { getOrderItems, settings };
+
   const handleCheckoutComplete = (order: Order) => {
     setLastOrder(order);
     setIsCheckoutOpen(false);
     setIsCartOpen(false);
-    setShowReceipt(true);
+    // No blocking receipt dialog: the receipt prints automatically and the cashier is free to serve
+    // the next customer right away. It can be printed again later from Manage Bills.
+    toast.success(`Sale complete - ${formatPKR(order.totalAmount)}`, { duration: 4000 });
+    // The new order's items reach state just after createOrder returns, so print once they are there.
+    setTimeout(() => {
+      const { getOrderItems: getItems, settings: currentSettings } = latestRef.current;
+      const orderItems = getItems(order.id);
+      if (orderItems.length === 0) {
+        toast.error('Sale saved, but the receipt could not be prepared. Print it from Manage Bills.');
+        return;
+      }
+      printOrderReceipt(order, orderItems, currentSettings);
+    }, 200);
+    setTimeout(() => searchInputRef.current?.focus(), 0);
   };
 
   const openEditBillDialog = (order: Order) => {
