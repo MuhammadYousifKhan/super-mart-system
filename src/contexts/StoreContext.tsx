@@ -844,6 +844,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const processPendingSyncQueue = useCallback(async () => {
     if (!import.meta.env.VITE_SUPABASE_URL) return;
+    if (!user) return; // RLS only allows signed-in users to write
     if (pendingSyncOps.length === 0) return;
     if (isProcessingPendingSync.current) return;
     if (typeof navigator !== 'undefined' && !navigator.onLine) return;
@@ -883,7 +884,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         void processPendingSyncQueue();
       }, delayMs);
     }
-  }, [executePendingSyncOperation, pendingSyncOps]);
+  }, [executePendingSyncOperation, pendingSyncOps, user]);
 
   // Load data from Supabase
   useEffect(() => {
@@ -907,6 +908,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         if (!import.meta.env.VITE_SUPABASE_URL) {
           console.warn('Supabase not configured, using local storage fallback');
           await loadFromDexie();
+          setLoading(false);
+          return;
+        }
+
+        // Tables require a signed-in user; fetching earlier would return empty lists.
+        if (!user) {
           setLoading(false);
           return;
         }
@@ -1219,7 +1226,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     };
 
     fetchData();
-  }, []);
+  }, [user?.id]);
 
   useEffect(() => {
     localStorage.setItem(PENDING_SYNC_STORAGE_KEY, JSON.stringify(pendingSyncOps));
@@ -1229,7 +1236,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     if (!import.meta.env.VITE_SUPABASE_URL) return;
     if (pendingSyncOps.length === 0) return;
     void processPendingSyncQueue();
-  }, []);
+  }, [user?.id]);
 
   useEffect(() => {
     const handleOnline = () => {
