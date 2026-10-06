@@ -465,7 +465,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         message.includes('name_not_resolved');
 
       if (isNetworkError) {
-        toast.error('No internet connection. You need to be online to sign in.');
+        // Signing in is the one step that needs internet; say which problem it is.
+        toast.error(
+          typeof navigator !== 'undefined' && !navigator.onLine
+            ? 'No internet connection. You need to be online to sign in.'
+            : 'Cannot reach the server. Check the internet connection and that the Supabase project is running.'
+        );
       } else {
         toast.error('Login failed. Please try again.');
       }
