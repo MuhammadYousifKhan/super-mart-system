@@ -484,6 +484,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Logout
   // ----------------------------------------------------------
   const logout = async () => {
+    // Clear any on-screen messages (e.g. a sync in progress) so none are left over on the login screen.
+    toast.dismiss();
     // Forget the saved profile first so the app can never reopen as this user after sign-out.
     clearCachedProfile();
     setUser(null);
