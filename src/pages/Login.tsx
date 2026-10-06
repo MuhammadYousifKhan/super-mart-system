@@ -2,7 +2,8 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/useAuth';
 import { useStore } from '@/contexts/useStore';
-import { AlertCircle, Eye, EyeOff, ArrowLeft, Mail, Lock, Loader2, ShieldCheck, Zap, BarChart3 } from 'lucide-react';
+import { useTheme } from '@/contexts/ThemeContext';
+import { AlertCircle, Eye, EyeOff, ArrowLeft, Mail, Lock, Loader2, ShieldCheck, Zap, BarChart3, Sun, Moon } from 'lucide-react';
 import { toast } from 'sonner';
 
 /* ──────────────────────────────────────────────────────────────
@@ -83,7 +84,10 @@ function useTypewriter(words: string[], typingSpeed = 100, deletingSpeed = 60, p
 /* ──────────────────────────────────────────────────────────────
    Canvas — Animated connected particles
    ────────────────────────────────────────────────────────────── */
-function ParticleCanvas() {
+function ParticleCanvas({ isDark }: { isDark: boolean }) {
+  // Read through a ref so the running animation picks up theme changes without restarting.
+  const darkRef = useRef(isDark);
+  darkRef.current = isDark;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const particlesRef = useRef<{ x: number; y: number; vx: number; vy: number; r: number }[]>([]);
   const animRef = useRef<number>(0);
@@ -131,7 +135,7 @@ function ParticleCanvas() {
 
         ctx.beginPath();
         ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(99,182,255,0.5)';
+        ctx.fillStyle = darkRef.current ? 'rgba(99,182,255,0.5)' : 'rgba(37,99,235,0.45)';
         ctx.fill();
       }
 
@@ -146,7 +150,8 @@ function ParticleCanvas() {
             ctx.beginPath();
             ctx.moveTo(pts[i].x, pts[i].y);
             ctx.lineTo(pts[j].x, pts[j].y);
-            ctx.strokeStyle = `rgba(99,182,255,${0.15 * (1 - dist / maxDist)})`;
+            const rgb = darkRef.current ? '99,182,255' : '37,99,235';
+            ctx.strokeStyle = `rgba(${rgb},${0.15 * (1 - dist / maxDist)})`;
             ctx.lineWidth = 0.5;
             ctx.stroke();
           }
@@ -186,6 +191,8 @@ export default function Login() {
   const [mounted, setMounted] = useState(false);
   const [focusedField, setFocusedField] = useState<string | null>(null);
   const { login, resetPassword } = useAuth();
+  const { theme, toggle } = useTheme();
+  const isDark = theme === 'dark';
   const navigate = useNavigate();
   const clock = useClock();
   const typedText = useTypewriter([
@@ -253,12 +260,23 @@ export default function Login() {
 
   return (
     <div className="lg-page">
+      {/* Theme toggle */}
+      <button
+        type="button"
+        className="lg-theme-toggle"
+        onClick={toggle}
+        aria-label={isDark ? 'Switch to light theme' : 'Switch to dark theme'}
+        title={isDark ? 'Light mode' : 'Dark mode'}
+      >
+        {isDark ? <Sun className="lg-theme-icon" /> : <Moon className="lg-theme-icon" />}
+      </button>
+
       {/* ─────────────────────────────────────
            LEFT HERO PANEL
          ───────────────────────────────────── */}
       <div className={`lg-hero ${mounted ? 'lg-hero--visible' : ''}`}>
         {/* Animated canvas particles */}
-        <ParticleCanvas />
+        <ParticleCanvas isDark={isDark} />
 
         {/* Gradient overlays */}
         <div className="lg-hero-gradient" />
