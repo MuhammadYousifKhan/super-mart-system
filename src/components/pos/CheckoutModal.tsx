@@ -41,6 +41,7 @@ export function CheckoutModal({ open, onOpenChange, onComplete }: CheckoutModalP
     settings,
     customers,
     getCustomerById,
+    products,
   } = useStore();
 
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash');
@@ -76,10 +77,9 @@ export function CheckoutModal({ open, onOpenChange, onComplete }: CheckoutModalP
 
   const handleComplete = async () => {
     for (const item of cart) {
-      if (
-        item.product.stockQuantity < item.quantity &&
-        !settings.allowNegativeStock
-      ) {
+      // Check against current stock: the cart's product copy may be older than a stock change.
+      const liveStock = products.find((p) => p.id === item.product.id)?.stockQuantity ?? item.product.stockQuantity;
+      if (liveStock < item.quantity && !settings.allowNegativeStock) {
         toast.error(`Insufficient stock for ${item.product.name}`);
         return;
       }

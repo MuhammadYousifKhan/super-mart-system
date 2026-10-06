@@ -17,16 +17,21 @@ interface QuickAddModalProps {
 }
 
 export function QuickAddModal({ open, onOpenChange }: QuickAddModalProps) {
-  const { products, updateProduct } = useStore();
+  const { products, adjustProductStock } = useStore();
   const [sku, setSku] = useState('');
   const [quantity, setQuantity] = useState('');
   const [foundProduct, setFoundProduct] = useState<typeof products[0] | null>(null);
 
   const handleSkuChange = (value: string) => {
     setSku(value);
-    const product = products.find(
-      (p) => p.sku.toLowerCase() === value.toLowerCase()
-    );
+    const query = value.trim().toLowerCase();
+    const product = query
+      ? products.find(
+          (p) =>
+            p.sku.toLowerCase() === query ||
+            (p.barcodeEnabled && !!p.barcode && p.barcode.toLowerCase() === query)
+        )
+      : undefined;
     setFoundProduct(product || null);
   };
 
@@ -40,9 +45,8 @@ export function QuickAddModal({ open, onOpenChange }: QuickAddModalProps) {
       return;
     }
 
-    updateProduct(foundProduct.id, {
-      stockQuantity: foundProduct.stockQuantity + addQty,
-    });
+    // Adds to the stock as it is now, so sales made while this dialog was open are kept.
+    void adjustProductStock(foundProduct.id, addQty);
 
     toast.success(`Added ${addQty} units to ${foundProduct.name}`);
     setSku('');

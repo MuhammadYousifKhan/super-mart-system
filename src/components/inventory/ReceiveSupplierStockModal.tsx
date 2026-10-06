@@ -1,3 +1,4 @@
+import { todayLocal } from '@/lib/dates';
 import { useMemo, useState } from 'react';
 import { useStore } from '@/contexts/useStore';
 import { Button } from '@/components/ui/button';
@@ -29,7 +30,7 @@ export function ReceiveSupplierStockModal({
   const [items, setItems] = useState<Array<{ productId: string; quantity: string; unitCost: string; expiryDate: string }>>([]);
   const [paidAmount, setPaidAmount] = useState('0');
   const [invoiceNumber, setInvoiceNumber] = useState('');
-  const [purchaseDate, setPurchaseDate] = useState(new Date().toISOString().slice(0, 10));
+  const [purchaseDate, setPurchaseDate] = useState(todayLocal());
   const [note, setNote] = useState('');
 
   const selectedSupplier = useMemo(
@@ -55,7 +56,7 @@ export function ReceiveSupplierStockModal({
     setItems([]);
     setPaidAmount('0');
     setInvoiceNumber('');
-    setPurchaseDate(new Date().toISOString().slice(0, 10));
+    setPurchaseDate(todayLocal());
     setNote('');
   };
 

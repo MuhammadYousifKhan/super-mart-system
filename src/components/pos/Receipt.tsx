@@ -2,6 +2,7 @@ import { useStore } from '@/contexts/useStore';
 import { Order, OrderItem as OrderItemType } from '@/types/pos';
 import { format } from 'date-fns';
 import { formatPKR } from '@/pages/Analytics';
+import { getOrderBreakdown, escapeHtml as esc } from '@/lib/orderMath';
 import { Button } from '@/components/ui/button';
 import { Printer, Share2 } from 'lucide-react';
 
@@ -16,6 +17,7 @@ export function printOrderReceipt(
 
   const orderDate = format(new Date(order.createdAt), 'dd MMM yyyy');
   const orderTime = format(new Date(order.createdAt), 'hh:mm a');
+  const breakdown = getOrderBreakdown(order, items);
 
   printWindow.document.write(`
     <html>
@@ -259,10 +261,10 @@ export function printOrderReceipt(
       <body>
         <!-- Header -->
         <div class="receipt-header">
-          <div class="store-name">${settings.storeName}</div>
+          <div class="store-name">${esc(settings.storeName)}</div>
           <div class="store-details">
-            ${settings.address}<br/>
-            Tel: ${settings.phone}
+            ${esc(settings.address)}<br/>
+            Tel: ${esc(settings.phone)}
           </div>
         </div>
 
@@ -282,17 +284,17 @@ export function printOrderReceipt(
           </div>
           <div class="info-row">
             <span class="label">Cashier:</span>
-            <span class="value">${order.cashierName}</span>
+            <span class="value">${esc(order.cashierName)}</span>
           </div>
           ${order.clientName ? `
           <div class="info-row">
             <span class="label">Customer:</span>
-            <span class="value">${order.clientName}</span>
+            <span class="value">${esc(order.clientName)}</span>
           </div>` : ''}
           ${order.clientPhone ? `
           <div class="info-row">
             <span class="label">Phone:</span>
-            <span class="value">${order.clientPhone}</span>
+            <span class="value">${esc(order.clientPhone)}</span>
           </div>` : ''}
         </div>
 
@@ -312,8 +314,8 @@ export function printOrderReceipt(
               <tr>
                 <td>${index + 1}</td>
                 <td>
-                  <div class="item-name">${item.productName}</div>
-                  <div class="item-sku">${item.productSku} · ${formatPKR(item.unitPriceAtSale)} ea</div>
+                  <div class="item-name">${esc(item.productName)}</div>
+                  <div class="item-sku">${esc(item.productSku)} · ${formatPKR(item.unitPriceAtSale)} ea</div>
                 </td>
                 <td>${item.quantity}</td>
                 <td>${formatPKR(item.unitPriceAtSale * item.quantity)}</td>
@@ -327,21 +329,21 @@ export function printOrderReceipt(
           <div class="summary-title">Order Total</div>
           <div class="summary-row">
             <span>Subtotal:</span>
-            <span>${formatPKR(order.subtotal)}</span>
+            <span>${formatPKR(breakdown.subtotal)}</span>
           </div>
-          ${order.discountAmount > 0 ? `
+          ${breakdown.discount > 0 ? `
           <div class="summary-row discount">
             <span>Discount:</span>
-            <span>-${formatPKR(order.discountAmount)}</span>
+            <span>-${formatPKR(breakdown.discount)}</span>
           </div>` : ''}
           <div class="summary-row">
-            <span>Tax (${settings.taxRate}%):</span>
+            <span>Tax (${breakdown.taxRate}%):</span>
             <span>${formatPKR(order.taxAmount)}</span>
           </div>
-          ${order.cardFeeAmount && order.cardFeeRate ? `
+          ${breakdown.cardFee > 0 ? `
           <div class="summary-row">
-            <span>Card Fee (${order.cardFeeRate}%):</span>
-            <span>${formatPKR(order.cardFeeAmount)}</span>
+            <span>Card Fee (${order.cardFeeRate ?? 0}%):</span>
+            <span>${formatPKR(breakdown.cardFee)}</span>
           </div>` : ''}
           <div class="summary-row grand-total">
             <span>TOTAL:</span>
@@ -358,7 +360,7 @@ export function printOrderReceipt(
           ${order.transactionId ? `
           <div class="info-row">
             <span class="label">TID:</span>
-            <span class="value">${order.transactionId}</span>
+            <span class="value">${esc(order.transactionId)}</span>
           </div>` : ''}
           ${order.paymentMethod === 'cash' && order.amountTendered ? `
           <div class="info-row">
@@ -379,7 +381,7 @@ export function printOrderReceipt(
 
         <!-- Footer -->
         <div class="receipt-footer">
-          <div class="footer-message">${settings.receiptFooterMessage}</div>
+          <div class="footer-message">${esc(settings.receiptFooterMessage)}</div>
           <div class="divider-dots">• • • • • • • • • • •</div>
           <div class="footer-generated">Generated: ${new Date().toLocaleString()}</div>
         </div>
@@ -420,13 +422,14 @@ export function Receipt({ order, showActions = false }: ReceiptProps) {
       text += `   ${formatPKR(item.unitPriceAtSale * item.quantity)}\n`;
     });
     text += `━━━━━━━━━━━━━━━━━━━━\n`;
-    text += `Subtotal: ${formatPKR(order.subtotal)}\n`;
-    if (order.discountAmount > 0) {
-      text += `Discount: -${formatPKR(order.discountAmount)}\n`;
+    const breakdown = getOrderBreakdown(order, items);
+    text += `Subtotal: ${formatPKR(breakdown.subtotal)}\n`;
+    if (breakdown.discount > 0) {
+      text += `Discount: -${formatPKR(breakdown.discount)}\n`;
     }
-    text += `Tax (${settings.taxRate}%): ${formatPKR(order.taxAmount)}\n`;
-    if (order.cardFeeAmount && order.cardFeeRate) {
-      text += `Card Fee (${order.cardFeeRate}%): ${formatPKR(order.cardFeeAmount)}\n`;
+    text += `Tax (${breakdown.taxRate}%): ${formatPKR(order.taxAmount)}\n`;
+    if (breakdown.cardFee > 0) {
+      text += `Card Fee (${order.cardFeeRate ?? 0}%): ${formatPKR(breakdown.cardFee)}\n`;
     }
     text += `*TOTAL: ${formatPKR(order.totalAmount)}*\n\n`;
     text += `Payment: ${order.paymentMethod.toUpperCase()}`;

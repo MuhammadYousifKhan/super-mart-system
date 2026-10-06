@@ -66,6 +66,8 @@ import {
   isThisMonth, 
   isThisYear, 
   parseISO, 
+  startOfDay,
+  endOfDay,
   startOfWeek, 
   startOfMonth, 
   startOfYear,
@@ -82,6 +84,7 @@ import {
 } from 'date-fns';
 import { Order } from '@/types/pos';
 import { Receipt as ReceiptComponent, printOrderReceipt } from '@/components/pos/Receipt';
+import { getOrderBreakdown } from '@/lib/orderMath';
 
 const COLORS = ['hsl(217, 91%, 50%)', 'hsl(142, 76%, 36%)', 'hsl(38, 92%, 50%)', 'hsl(280, 65%, 60%)', 'hsl(0, 72%, 51%)'];
 
@@ -103,37 +106,45 @@ export default function Analytics() {
   const [customStartDate, setCustomStartDate] = useState('');
   const [customEndDate, setCustomEndDate] = useState('');
 
-  const filteredOrders = useMemo(() => {
-    let filtered = orders.filter((o) => {
+  // Orders in the selected period, including cancelled ones (shown in the list, excluded from totals).
+  const periodOrders = useMemo(() => {
+    const filtered = orders.filter((o) => {
       const date = parseISO(o.createdAt);
       switch (filterPeriod) {
         case 'today': return isToday(date);
         case 'week': return isThisWeek(date, { weekStartsOn: 1 });
         case 'month': return isThisMonth(date);
         case 'year': return isThisYear(date);
-        case 'custom':
-          if (!customStartDate || !customEndDate) return true;
-          const start = new Date(customStartDate);
-          const end = new Date(customEndDate);
-          end.setHours(23, 59, 59);
-          return date >= start && date <= end;
+        case 'custom': {
+          if (!customStartDate && !customEndDate) return true;
+          // parseISO reads YYYY-MM-DD as local time, so the range matches the store's clock.
+          const start = customStartDate ? startOfDay(parseISO(customStartDate)) : null;
+          const end = customEndDate ? endOfDay(parseISO(customEndDate)) : null;
+          if (start && date < start) return false;
+          if (end && date > end) return false;
+          return true;
+        }
         default: return true;
       }
     });
 
-    // Apply search filter
-    if (searchQuery) {
-      const query = searchQuery.toLowerCase();
-      filtered = filtered.filter((o) =>
-        o.id.toLowerCase().includes(query) ||
-        o.cashierName.toLowerCase().includes(query) ||
-        o.clientName?.toLowerCase().includes(query) ||
-        o.paymentMethod.toLowerCase().includes(query)
-      );
-    }
-
     return filtered.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  }, [orders, filterPeriod, customStartDate, customEndDate, searchQuery]);
+  }, [orders, filterPeriod, customStartDate, customEndDate]);
+
+  // Cancelled/refunded bills don't count as sales.
+  const filteredOrders = useMemo(() => periodOrders.filter((o) => o.status !== 'refunded'), [periodOrders]);
+
+  // Transactions list: whole period plus the search box (search no longer changes the totals).
+  const transactionOrders = useMemo(() => {
+    if (!searchQuery) return periodOrders;
+    const query = searchQuery.toLowerCase();
+    return periodOrders.filter((o) =>
+      o.id.toLowerCase().includes(query) ||
+      o.cashierName.toLowerCase().includes(query) ||
+      o.clientName?.toLowerCase().includes(query) ||
+      o.paymentMethod.toLowerCase().includes(query)
+    );
+  }, [periodOrders, searchQuery]);
 
   const stats = useMemo(() => {
     const revenue = filteredOrders.reduce((s, o) => s + o.totalAmount, 0);
@@ -212,7 +223,7 @@ export default function Analytics() {
       const product = products.find((p) => p.id === item.productId);
       if (product) {
         const catName = categories.find((c) => c.id === product.categoryId)?.name || 'Other';
-        catSales[catName] = (catSales[catName] || 0) + item.unitPriceAtSale * item.quantity;
+        catSales[catName] = (catSales[catName] || 0) + item.unitPriceAtSale * item.quantity - item.discountAmount;
       }
     });
 
@@ -294,7 +305,12 @@ export default function Analytics() {
     items.forEach((item) => {
       text += `${item.quantity}x ${item.productName} - ${formatPKR(item.unitPriceAtSale * item.quantity)}\n`;
     });
-    text += `\n*Total: ${formatPKR(order.totalAmount)}*\n`;
+    const breakdown = getOrderBreakdown(order, items);
+    text += `\nSubtotal: ${formatPKR(breakdown.subtotal)}\n`;
+    if (breakdown.discount > 0) text += `Discount: -${formatPKR(breakdown.discount)}\n`;
+    if (order.taxAmount > 0) text += `Tax (${breakdown.taxRate}%): ${formatPKR(order.taxAmount)}\n`;
+    if (breakdown.cardFee > 0) text += `Card Fee: ${formatPKR(breakdown.cardFee)}\n`;
+    text += `*Total: ${formatPKR(order.totalAmount)}*\n`;
     text += `Payment: ${order.paymentMethod.toUpperCase()}\n`;
     text += `\n${settings.receiptFooterMessage}`;
     
@@ -317,12 +333,13 @@ export default function Analytics() {
         transfer: formatPKR(stats.transferSales),
         credit: formatPKR(stats.creditSales),
       },
-      transactions: filteredOrders.map((o) => ({
+      transactions: periodOrders.map((o) => ({
         id: o.id.slice(-8).toUpperCase(),
         date: format(parseISO(o.createdAt), 'dd/MM/yyyy HH:mm'),
         cashier: o.cashierName,
         customer: o.clientName || '-',
         payment: o.paymentMethod,
+        status: o.status,
         total: formatPKR(o.totalAmount),
       })),
     };
@@ -337,10 +354,25 @@ export default function Analytics() {
   };
 
   const generateCSVReport = () => {
-    let csv = 'Invoice ID,Date,Time,Cashier,Customer,Payment Method,Total Amount\n';
-    filteredOrders.forEach((o) => {
-      csv += `${o.id.slice(-8).toUpperCase()},${format(parseISO(o.createdAt), 'dd/MM/yyyy')},${format(parseISO(o.createdAt), 'HH:mm')},${o.cashierName},${o.clientName || '-'},${o.paymentMethod},${o.totalAmount}\n`;
+    // Quote every text field so names containing commas or quotes don't shift the columns.
+    const cell = (value: string | number) => `"${String(value).replace(/"/g, '""')}"`;
+    const headers = ['Invoice ID', 'Date', 'Time', 'Cashier', 'Customer', 'Payment Method', 'Status', 'Tax', 'Discount', 'Total Amount'];
+    const rows = periodOrders.map((o) => {
+      const { discount } = getOrderBreakdown(o, getOrderItems(o.id));
+      return [
+        o.id.slice(-8).toUpperCase(),
+        format(parseISO(o.createdAt), 'dd/MM/yyyy'),
+        format(parseISO(o.createdAt), 'HH:mm'),
+        o.cashierName,
+        o.clientName || '-',
+        o.paymentMethod,
+        o.status,
+        o.taxAmount,
+        discount,
+        o.totalAmount,
+      ].map(cell).join(',');
     });
+    const csv = [headers.map(cell).join(','), ...rows].join('\n') + '\n';
 
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
@@ -597,7 +629,7 @@ export default function Analytics() {
                 className="pl-9"
               />
             </div>
-            <Badge variant="secondary">{filteredOrders.length} transactions</Badge>
+            <Badge variant="secondary">{transactionOrders.length} transactions</Badge>
           </div>
 
           {/* Transactions Table */}
@@ -617,21 +649,24 @@ export default function Analytics() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {filteredOrders.length === 0 ? (
+                    {transactionOrders.length === 0 ? (
                       <TableRow>
                         <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
                           No transactions found
                         </TableCell>
                       </TableRow>
                     ) : (
-                      filteredOrders.map((order) => (
+                      transactionOrders.map((order) => (
                         <TableRow 
                           key={order.id} 
-                          className="cursor-pointer hover:bg-muted/50"
+                          className={`cursor-pointer hover:bg-muted/50 ${order.status === 'refunded' ? 'opacity-60' : ''}`}
                           onClick={() => handleViewBill(order)}
                         >
                           <TableCell className="font-mono text-xs font-medium">
                             #{order.id.slice(-8).toUpperCase()}
+                            {order.status === 'refunded' && (
+                              <Badge variant="destructive" className="ml-2 text-[10px]">Cancelled</Badge>
+                            )}
                           </TableCell>
                           <TableCell>
                             <div className="flex flex-col">
@@ -801,7 +836,7 @@ export default function Analytics() {
                   <div className="flex justify-between">
                     <span className="text-muted-foreground">Unique Customers</span>
                     <span className="font-medium">
-                      {new Set(filteredOrders.filter(o => o.clientName).map(o => o.clientName)).size}
+                      {new Set(filteredOrders.filter(o => o.customerId || o.clientName).map(o => o.customerId || o.clientName)).size}
                     </span>
                   </div>
                   <div className="flex justify-between">
@@ -898,20 +933,33 @@ export default function Analytics() {
 
               {/* Totals */}
               <div className="space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Subtotal</span>
-                  <span>{formatPKR(selectedOrder.subtotal)}</span>
-                </div>
-                {selectedOrder.discountAmount > 0 && (
-                  <div className="flex justify-between text-success">
-                    <span>Discount</span>
-                    <span>-{formatPKR(selectedOrder.discountAmount)}</span>
-                  </div>
-                )}
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Tax ({settings.taxRate}%)</span>
-                  <span>{formatPKR(selectedOrder.taxAmount)}</span>
-                </div>
+                {(() => {
+                  const b = getOrderBreakdown(selectedOrder, getOrderItems(selectedOrder.id));
+                  return (
+                    <>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Subtotal</span>
+                        <span>{formatPKR(b.subtotal)}</span>
+                      </div>
+                      {b.discount > 0 && (
+                        <div className="flex justify-between text-success">
+                          <span>Discount</span>
+                          <span>-{formatPKR(b.discount)}</span>
+                        </div>
+                      )}
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Tax ({b.taxRate}%)</span>
+                        <span>{formatPKR(selectedOrder.taxAmount)}</span>
+                      </div>
+                      {b.cardFee > 0 && (
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground">Card Fee ({selectedOrder.cardFeeRate ?? 0}%)</span>
+                          <span>{formatPKR(b.cardFee)}</span>
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
                 <div className="flex justify-between text-lg font-bold border-t pt-2">
                   <span>Total</span>
                   <span>{formatPKR(selectedOrder.totalAmount)}</span>

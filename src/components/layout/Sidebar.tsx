@@ -82,7 +82,7 @@ export function Sidebar() {
             </div>
           )}
           <h1 className="font-bold text-base text-white truncate">
-            {settings.storeName || 'POS System Name'}
+            {settings.storeName || 'Point of Sale'}
           </h1>
         </div>
         <Button
@@ -130,7 +130,7 @@ export function Sidebar() {
           )}
           <div className="flex-1 min-w-0">
             <h1 className="font-bold text-lg tracking-tight text-sidebar-foreground truncate">
-              {settings.storeName || 'POS System Name'}
+              {settings.storeName || 'Point of Sale'}
             </h1>
             <div className="flex items-center gap-1.5">
               <div className="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />

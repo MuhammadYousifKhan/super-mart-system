@@ -244,6 +244,19 @@ insert into public.units (id, name, description) values
   ('unit-ml', 'Milliliters', 'Volume in milliliters')
 on conflict (id) do nothing;
 
+-- Deleting a product or customer that already appears on sales used to fail in the database
+-- (and the app kept retrying). Sales keep their own copy of the product name/SKU and customer
+-- name, so the link can safely be cleared instead.
+alter table public.order_items drop constraint if exists order_items_product_id_fkey;
+alter table public.order_items
+  add constraint order_items_product_id_fkey
+  foreign key (product_id) references public.products(id) on delete set null;
+
+alter table public.orders drop constraint if exists orders_customer_id_fkey;
+alter table public.orders
+  add constraint orders_customer_id_fkey
+  foreign key (customer_id) references public.customers(id) on delete set null;
+
 -- Enable Row Level Security (RLS)
 alter table public.categories enable row level security;
 alter table public.units enable row level security;
@@ -258,9 +271,89 @@ alter table public.orders enable row level security;
 alter table public.order_items enable row level security;
 alter table public.store_settings enable row level security;
 
--- Create policies to allow anonymous access (since we are using mock auth in the frontend)
--- In a real production app with Supabase Auth, you would restrict this to authenticated users.
+-- ============================================================
+-- User Roles Table (For real authentication)
+-- ============================================================
+create table if not exists public.user_roles (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references auth.users(id) on delete cascade not null,
+  email text not null,
+  role text not null check (role in ('admin', 'cashier', 'frontdesk')),
+  full_name text,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  unique(user_id),
+  unique(email)
+);
 
+-- Existing databases were created with a constraint that rejected 'frontdesk'.
+alter table public.user_roles drop constraint if exists user_roles_role_check;
+alter table public.user_roles
+  add constraint user_roles_role_check check (role in ('admin', 'cashier', 'frontdesk'));
+
+alter table public.user_roles enable row level security;
+
+-- ============================================================
+-- Admin check helper
+-- Lives in a private schema that the REST API does not expose, so it can't be
+-- called through /rest/v1/rpc/is_admin. SECURITY DEFINER avoids policy recursion.
+-- ============================================================
+create schema if not exists private;
+revoke all on schema private from public, anon;
+grant usage on schema private to authenticated;
+
+-- Policies that reference the old public.is_admin() must go before it can be dropped.
+drop policy if exists "Admins can read all roles" on public.user_roles;
+drop policy if exists "Allow admins to write store_settings" on public.store_settings;
+drop policy if exists "Admins can insert store_settings" on public.store_settings;
+drop policy if exists "Admins can update store_settings" on public.store_settings;
+drop policy if exists "Admins can delete store_settings" on public.store_settings;
+
+create or replace function private.is_admin()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists(
+    select 1
+    from public.user_roles
+    where user_id = (select auth.uid())
+      and role = 'admin'
+  );
+$$;
+
+revoke execute on function private.is_admin() from public, anon;
+grant execute on function private.is_admin() to authenticated;
+
+drop function if exists public.is_admin();
+
+-- user_roles: users can read their own row, admins can read all.
+drop policy if exists "Users can read their own role" on public.user_roles;
+drop policy if exists "Users can read role by email" on public.user_roles;
+
+create policy "Users can read their own role" on public.user_roles
+  for select
+  to authenticated
+  using ((select auth.uid()) = user_id);
+
+-- Allows a user to read their own role row even if user_id mapping was inserted incorrectly,
+-- without allowing reading other users' roles.
+create policy "Users can read role by email" on public.user_roles
+  for select
+  to authenticated
+  using (email = ((select auth.jwt()) ->> 'email'));
+
+create policy "Admins can read all roles" on public.user_roles
+  for select
+  to authenticated
+  using ((select private.is_admin()));
+
+-- ============================================================
+-- Data tables: signed-in users only.
+-- The old "Allow public access" policies (USING (true)) let anyone holding the
+-- public anon key read and change every table. They are removed here.
+-- ============================================================
 drop policy if exists "Allow public access to categories" on public.categories;
 drop policy if exists "Allow public access to units" on public.units;
 drop policy if exists "Allow public access to products" on public.products;
@@ -274,73 +367,70 @@ drop policy if exists "Allow public access to orders" on public.orders;
 drop policy if exists "Allow public access to order_items" on public.order_items;
 drop policy if exists "Allow public access to store_settings" on public.store_settings;
 
-create policy "Allow public access to categories" on public.categories for all using (true);
-create policy "Allow public access to units" on public.units for all using (true);
-create policy "Allow public access to products" on public.products for all using (true);
-create policy "Allow public access to customers" on public.customers for all using (true);
-create policy "Allow public access to customer_transactions" on public.customer_transactions for all using (true);
-create policy "Allow public access to customer_reminders" on public.customer_reminders for all using (true);
-create policy "Allow public access to suppliers" on public.suppliers for all using (true);
-create policy "Allow public access to supplier_purchases" on public.supplier_purchases for all using (true);
-create policy "Allow public access to supplier_payment_schedules" on public.supplier_payment_schedules for all using (true);
-create policy "Allow public access to orders" on public.orders for all using (true);
-create policy "Allow public access to order_items" on public.order_items for all using (true);
-create policy "Allow public access to store_settings" on public.store_settings for all using (true);
+drop policy if exists "Authenticated access to categories" on public.categories;
+drop policy if exists "Authenticated access to units" on public.units;
+drop policy if exists "Authenticated access to products" on public.products;
+drop policy if exists "Authenticated access to customers" on public.customers;
+drop policy if exists "Authenticated access to customer_transactions" on public.customer_transactions;
+drop policy if exists "Authenticated access to customer_reminders" on public.customer_reminders;
+drop policy if exists "Authenticated access to suppliers" on public.suppliers;
+drop policy if exists "Authenticated access to supplier_purchases" on public.supplier_purchases;
+drop policy if exists "Authenticated access to supplier_payment_schedules" on public.supplier_payment_schedules;
+drop policy if exists "Authenticated access to orders" on public.orders;
+drop policy if exists "Authenticated access to order_items" on public.order_items;
+drop policy if exists "Authenticated can read store_settings" on public.store_settings;
 
--- User Roles Table (For real authentication)
-create table if not exists public.user_roles (
-  id uuid primary key default gen_random_uuid(),
-  user_id uuid references auth.users(id) on delete cascade not null,
-  email text not null,
-  role text not null check (role in ('admin', 'cashier')),
-  full_name text,
-  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
-  unique(user_id),
-  unique(email)
-);
+create policy "Authenticated access to categories" on public.categories
+  for all to authenticated
+  using ((select auth.uid()) is not null) with check ((select auth.uid()) is not null);
+create policy "Authenticated access to units" on public.units
+  for all to authenticated
+  using ((select auth.uid()) is not null) with check ((select auth.uid()) is not null);
+create policy "Authenticated access to products" on public.products
+  for all to authenticated
+  using ((select auth.uid()) is not null) with check ((select auth.uid()) is not null);
+create policy "Authenticated access to customers" on public.customers
+  for all to authenticated
+  using ((select auth.uid()) is not null) with check ((select auth.uid()) is not null);
+create policy "Authenticated access to customer_transactions" on public.customer_transactions
+  for all to authenticated
+  using ((select auth.uid()) is not null) with check ((select auth.uid()) is not null);
+create policy "Authenticated access to customer_reminders" on public.customer_reminders
+  for all to authenticated
+  using ((select auth.uid()) is not null) with check ((select auth.uid()) is not null);
+create policy "Authenticated access to suppliers" on public.suppliers
+  for all to authenticated
+  using ((select auth.uid()) is not null) with check ((select auth.uid()) is not null);
+create policy "Authenticated access to supplier_purchases" on public.supplier_purchases
+  for all to authenticated
+  using ((select auth.uid()) is not null) with check ((select auth.uid()) is not null);
+create policy "Authenticated access to supplier_payment_schedules" on public.supplier_payment_schedules
+  for all to authenticated
+  using ((select auth.uid()) is not null) with check ((select auth.uid()) is not null);
+create policy "Authenticated access to orders" on public.orders
+  for all to authenticated
+  using ((select auth.uid()) is not null) with check ((select auth.uid()) is not null);
+create policy "Authenticated access to order_items" on public.order_items
+  for all to authenticated
+  using ((select auth.uid()) is not null) with check ((select auth.uid()) is not null);
 
-alter table public.user_roles enable row level security;
--- Admins can read all roles, users can read their own
--- Use helper function to avoid potential policy recursion.
-create or replace function public.is_admin()
-returns boolean
-language sql
-stable
-security definer
-set search_path = public
-as $$
-  select exists(
-    select 1
-    from public.user_roles
-    where user_id = auth.uid()
-      and role = 'admin'
-  );
-$$;
+-- Store settings: every signed-in user reads them (receipts need the store name),
+-- only admins can change them.
+create policy "Authenticated can read store_settings" on public.store_settings
+  for select to authenticated
+  using ((select auth.uid()) is not null);
+create policy "Admins can insert store_settings" on public.store_settings
+  for insert to authenticated
+  with check ((select private.is_admin()));
+create policy "Admins can update store_settings" on public.store_settings
+  for update to authenticated
+  using ((select private.is_admin())) with check ((select private.is_admin()));
+create policy "Admins can delete store_settings" on public.store_settings
+  for delete to authenticated
+  using ((select private.is_admin()));
 
-drop policy if exists "Users can read their own role" on public.user_roles;
-drop policy if exists "Users can read role by email" on public.user_roles;
-drop policy if exists "Admins can read all roles" on public.user_roles;
-
-create policy "Users can read their own role" on public.user_roles
-  for select
-  using (auth.uid() = user_id);
-
--- Allows a user to read their own role row even if user_id mapping was inserted incorrectly,
--- without allowing reading other users' roles.
-create policy "Users can read role by email" on public.user_roles
-  for select
-  using (email = (auth.jwt() ->> 'email'));
-
-create policy "Admins can read all roles" on public.user_roles
-  for select
-  using (public.is_admin());
-
--- Secure policies for production (Optional: replace the public policies above with these)
--- For example:
--- create policy "Allow authenticated users to view products" on public.products for select using (auth.role() = 'authenticated');
--- create policy "Allow admins to edit products" on public.products for all using (
---   (select role from public.user_roles where user_id = auth.uid()) = 'admin'
--- );
+-- Not covered by SQL: turn on "Leaked password protection" in the Supabase dashboard
+-- (Authentication > Policies / Password security).
 
 -- Create indexes for better query performance
 create index if not exists idx_products_category on public.products(category_id);
