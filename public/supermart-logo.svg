@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 220" width="800" height="220">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1E3A8A"/>
+      <stop offset="0.55" stop-color="#2563EB"/>
+      <stop offset="1" stop-color="#06B6D4"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="word" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#2563EB"/>
+      <stop offset="1" stop-color="#06B6D4"/>
+    </linearGradient>
+  </defs>
+
+  <!-- icon -->
+  <g transform="translate(10 10) scale(0.38)">
+    <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#bg)"/>
+    <rect x="16" y="16" width="480" height="240" rx="112" fill="url(#shine)"/>
+    <path d="M190 215 H410 L370 320 H210 Z" fill="#fff" fill-opacity="0.16"/>
+    <path d="M110 168 H165 L210 320 H370 L410 215 H190" fill="none" stroke="#fff" stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+    <g fill="#fff">
+      <rect x="236" y="238" width="12" height="62" rx="3"/>
+      <rect x="262" y="238" width="7" height="62" rx="3"/>
+      <rect x="283" y="238" width="16" height="62" rx="3"/>
+      <rect x="313" y="238" width="7" height="62" rx="3"/>
+      <rect x="334" y="238" width="12" height="62" rx="3"/>
+    </g>
+    <circle cx="232" cy="378" r="22" fill="#fff"/>
+    <circle cx="350" cy="378" r="22" fill="#fff"/>
+    <circle cx="392" cy="140" r="26" fill="#FBBF24"/>
+    <path d="M392 126 V154 M378 140 H406" stroke="#1E3A8A" stroke-width="8" stroke-linecap="round"/>
+  </g>
+
+  <!-- wordmark -->
+  <text x="230" y="115" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="84" font-weight="800" letter-spacing="-2">
+    <tspan fill="#0F1F4D">Super</tspan><tspan fill="url(#word)">Mart</tspan>
+  </text>
+  <rect x="234" y="140" width="40" height="5" rx="2.5" fill="#FBBF24"/>
+  <text x="234" y="178" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="24" font-weight="600" letter-spacing="9" fill="#64748B">POINT OF SALE</text>
+</svg>

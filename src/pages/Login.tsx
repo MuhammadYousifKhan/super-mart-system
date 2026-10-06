@@ -5,6 +5,7 @@ import { useStore } from '@/contexts/useStore';
 import { useTheme } from '@/contexts/ThemeContext';
 import { AlertCircle, Eye, EyeOff, ArrowLeft, Mail, Lock, Loader2, ShieldCheck, Zap, BarChart3, Sun, Moon } from 'lucide-react';
 import { toast } from 'sonner';
+import appIcon from '@/assets/supermart-icon.svg';
 
 /* ──────────────────────────────────────────────────────────────
    Particles — tiny floating dots for the left hero panel
@@ -297,11 +298,7 @@ export default function Login() {
               {settings.logo ? (
                 <img src={settings.logo} alt={storeName} className="w-full h-full object-contain p-2" />
               ) : (
-              <svg viewBox="0 0 24 24" fill="none" className="lg-hero-logo-svg">
-                <path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                <line x1="3" y1="6" x2="21" y2="6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                <path d="M16 10a4 4 0 01-8 0" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
+                <img src={appIcon} alt="Super Mart POS" className="w-full h-full object-contain p-1" />
               )}
             </div>
             <div className="lg-hero-logo-pulse" />
@@ -359,11 +356,7 @@ export default function Login() {
               {settings.logo ? (
                 <img src={settings.logo} alt={storeName} className="w-full h-full object-contain" />
               ) : (
-              <svg viewBox="0 0 24 24" fill="none" className="lg-mobile-logo-svg">
-                <path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                <line x1="3" y1="6" x2="21" y2="6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                <path d="M16 10a4 4 0 01-8 0" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
+                <img src={appIcon} alt="Super Mart POS" className="w-full h-full object-contain" />
               )}
             </div>
             <span className="lg-mobile-brand-text">{storeName}</span>

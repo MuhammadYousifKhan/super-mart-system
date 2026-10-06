@@ -11,7 +11,6 @@ import {
   BarChart3,
   Settings,
   LogOut,
-  Store,
   Menu,
   X,
   Users,
@@ -21,6 +20,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useTheme } from '@/contexts/ThemeContext';
+import appIcon from '@/assets/supermart-icon.svg';
 
 const adminNavItems = [
   { path: '/pos', icon: ShoppingCart, label: 'POS Terminal' },
@@ -77,9 +77,7 @@ export function Sidebar() {
               />
             </div>
           ) : (
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary to-primary/60 flex items-center justify-center shadow-[0_0_15px_hsl(var(--primary)/0.5)]">
-              <Store className="w-4 h-4 text-primary-foreground" />
-            </div>
+            <img src={appIcon} alt="Super Mart POS" className="w-8 h-8 rounded-lg" />
           )}
           <h1 className="font-bold text-base text-white truncate">
             {settings.storeName || 'Point of Sale'}
@@ -124,9 +122,7 @@ export function Sidebar() {
               />
             </div>
           ) : (
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary to-primary/60 flex items-center justify-center shadow-[0_0_15px_hsl(var(--primary)/0.5)]">
-              <Store className="w-5 h-5 text-primary-foreground" />
-            </div>
+            <img src={appIcon} alt="Super Mart POS" className="w-10 h-10 rounded-xl" />
           )}
           <div className="flex-1 min-w-0">
             <h1 className="font-bold text-lg tracking-tight text-sidebar-foreground truncate">

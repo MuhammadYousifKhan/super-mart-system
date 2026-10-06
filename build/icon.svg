@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1E3A8A"/>
+      <stop offset="0.55" stop-color="#2563EB"/>
+      <stop offset="1" stop-color="#06B6D4"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#fff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#bg)"/>
+  <rect x="16" y="16" width="480" height="240" rx="112" fill="url(#shine)"/>
+  <!-- basket -->
+  <path d="M190 215 H410 L370 320 H210 Z" fill="#fff" fill-opacity="0.16"/>
+  <!-- cart outline -->
+  <path d="M110 168 H165 L210 320 H370 L410 215 H190" fill="none" stroke="#fff" stroke-width="26" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- barcode -->
+  <g fill="#fff">
+    <rect x="236" y="238" width="12" height="62" rx="3"/>
+    <rect x="262" y="238" width="7" height="62" rx="3"/>
+    <rect x="283" y="238" width="16" height="62" rx="3"/>
+    <rect x="313" y="238" width="7" height="62" rx="3"/>
+    <rect x="334" y="238" width="12" height="62" rx="3"/>
+  </g>
+  <!-- wheels -->
+  <circle cx="232" cy="378" r="22" fill="#fff"/>
+  <circle cx="350" cy="378" r="22" fill="#fff"/>
+  <!-- accent spark -->
+  <circle cx="392" cy="140" r="26" fill="#FBBF24"/>
+  <path d="M392 126 V154 M378 140 H406" stroke="#1E3A8A" stroke-width="8" stroke-linecap="round"/>
+</svg>
