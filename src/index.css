@@ -1164,3 +1164,149 @@
   }
 }
 
+
+/* ================================================================
+   LOGIN PAGE - theme toggle + light theme
+   (dark is the base styling above; light overrides apply when the
+   app is not in dark mode)
+   ================================================================ */
+.lg-theme-toggle {
+  position: absolute;
+  top: 1.25rem;
+  right: 1.25rem;
+  z-index: 30;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  cursor: pointer;
+  color: #fcd34d;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(10px);
+  transition: transform 0.25s, background 0.25s, box-shadow 0.25s, color 0.25s;
+}
+
+.lg-theme-toggle:hover {
+  transform: rotate(15deg) scale(1.06);
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.lg-theme-toggle:focus-visible {
+  outline: 2px solid #38bdf8;
+  outline-offset: 2px;
+}
+
+.lg-theme-icon {
+  width: 20px;
+  height: 20px;
+}
+
+html:not(.dark) .lg-theme-toggle {
+  color: #1e3a8a;
+  background: rgba(255, 255, 255, 0.85);
+  border-color: rgba(15, 23, 42, 0.12);
+  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.08);
+}
+
+html:not(.dark) .lg-theme-toggle:hover {
+  background: #fff;
+}
+
+/* Page + panels */
+html:not(.dark) .lg-page { background: #eef4ff; }
+
+html:not(.dark) .lg-hero {
+  background: linear-gradient(160deg, #e0edff 0%, #eaf2ff 40%, #f3f0ff 100%);
+  border-right-color: rgba(37, 99, 235, 0.12);
+}
+
+html:not(.dark) .lg-hero-gradient {
+  background:
+    radial-gradient(ellipse at 20% 50%, rgba(56, 152, 236, 0.16) 0%, transparent 60%),
+    radial-gradient(ellipse at 80% 20%, rgba(139, 92, 246, 0.12) 0%, transparent 50%),
+    radial-gradient(ellipse at 60% 80%, rgba(16, 185, 129, 0.10) 0%, transparent 50%);
+}
+
+html:not(.dark) .lg-form-panel { background: #ffffff; }
+html:not(.dark) .lg-form-pattern {
+  background-image: radial-gradient(rgba(37, 99, 235, 0.07) 1px, transparent 1px);
+}
+
+/* Hero text */
+html:not(.dark) .lg-hero-title { color: #0f172a; }
+html:not(.dark) .lg-hero-tagline { color: #475569; }
+html:not(.dark) .lg-hero-typed {
+  background: rgba(37, 99, 235, 0.08);
+  border-color: rgba(37, 99, 235, 0.2);
+}
+html:not(.dark) .lg-hero-typed-text,
+html:not(.dark) .lg-hero-cursor { color: #1d4ed8; }
+html:not(.dark) .lg-hero-logo-inner {
+  background: linear-gradient(145deg, rgba(56, 152, 236, 0.22), rgba(139, 92, 246, 0.16));
+  border-color: rgba(37, 99, 235, 0.25);
+}
+html:not(.dark) .lg-hero-logo-svg { color: #1d4ed8; }
+html:not(.dark) .lg-feature-pill--1 { color: #0369a1; background: rgba(14, 165, 233, 0.1); border-color: rgba(14, 165, 233, 0.3); }
+html:not(.dark) .lg-feature-pill--2 { color: #6d28d9; background: rgba(139, 92, 246, 0.1); border-color: rgba(139, 92, 246, 0.3); }
+html:not(.dark) .lg-feature-pill--3 { color: #047857; background: rgba(16, 185, 129, 0.1); border-color: rgba(16, 185, 129, 0.3); }
+html:not(.dark) .lg-hero-clock { border-top-color: rgba(15, 23, 42, 0.1); }
+html:not(.dark) .lg-hero-time { color: #1e293b; }
+html:not(.dark) .lg-hero-date { color: #64748b; }
+
+/* Form text */
+html:not(.dark) .lg-mobile-brand-text {
+  background: linear-gradient(135deg, #0f172a, #2563eb);
+  -webkit-background-clip: text;
+  background-clip: text;
+}
+html:not(.dark) .lg-mobile-logo {
+  background: linear-gradient(145deg, rgba(56, 152, 236, 0.2), rgba(139, 92, 246, 0.15));
+  border-color: rgba(37, 99, 235, 0.25);
+}
+html:not(.dark) .lg-mobile-logo-svg { color: #1d4ed8; }
+html:not(.dark) .lg-form-title { color: #0f172a; }
+html:not(.dark) .lg-form-subtitle { color: #64748b; }
+html:not(.dark) .lg-label { color: #334155; }
+html:not(.dark) .lg-forgot-link { color: #2563eb; }
+html:not(.dark) .lg-forgot-link:hover { color: #1d4ed8; }
+
+/* Inputs */
+html:not(.dark) .lg-input-group {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+}
+html:not(.dark) .lg-input-group--focused {
+  background: #fff;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+html:not(.dark) .lg-input { color: #0f172a; }
+html:not(.dark) .lg-input::placeholder { color: #94a3b8; }
+html:not(.dark) .lg-input-pre-icon,
+html:not(.dark) .lg-eye-icon { color: #94a3b8; }
+html:not(.dark) .lg-input-group--focused .lg-input-pre-icon,
+html:not(.dark) .lg-eye:hover .lg-eye-icon { color: #2563eb; }
+html:not(.dark) .lg-eye:hover { background: rgba(15, 23, 42, 0.06); }
+
+/* Error, back link, footer */
+html:not(.dark) .lg-error {
+  background: #fef2f2;
+  border-color: #fecaca;
+  color: #b91c1c;
+}
+html:not(.dark) .lg-error-icon { color: #dc2626; }
+html:not(.dark) .lg-back { color: #64748b; }
+html:not(.dark) .lg-back:hover { color: #2563eb; }
+html:not(.dark) .lg-footer-line {
+  background: linear-gradient(90deg, transparent, rgba(15, 23, 42, 0.15), transparent);
+}
+html:not(.dark) .lg-footer-text { color: #94a3b8; }
+
+@media (max-width: 1023px) {
+  html:not(.dark) .lg-page {
+    background: linear-gradient(160deg, #eef4ff 0%, #f5f8ff 50%, #f3f0ff 100%);
+  }
+}

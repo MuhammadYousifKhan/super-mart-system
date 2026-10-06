@@ -12,8 +12,17 @@ export function printOrderReceipt(
   items: OrderItemType[],
   settings: { storeName: string; address: string; phone: string; taxRate: number; receiptFooterMessage: string }
 ) {
-  const printWindow = window.open('', '_blank');
-  if (!printWindow) return;
+  // Print from a hidden frame inside the POS window instead of a new window, so nothing is left
+  // open for the cashier to close before serving the next customer.
+  const frame = document.createElement('iframe');
+  frame.setAttribute('aria-hidden', 'true');
+  frame.style.cssText = 'position:fixed;left:-10000px;top:0;width:800px;height:600px;border:0;';
+  document.body.appendChild(frame);
+  const printWindow = frame.contentWindow;
+  if (!printWindow) {
+    frame.remove();
+    return;
+  }
 
   const orderDate = format(new Date(order.createdAt), 'dd MMM yyyy');
   const orderTime = format(new Date(order.createdAt), 'hh:mm a');
@@ -389,7 +398,16 @@ export function printOrderReceipt(
     </html>
   `);
   printWindow.document.close();
-  printWindow.print();
+
+  const cleanup = () => frame.remove();
+  printWindow.addEventListener('afterprint', cleanup);
+  // Fallback in case the afterprint event never fires.
+  setTimeout(cleanup, 120000);
+  // Short delay so the receipt styles and logo are laid out before the print dialog opens.
+  setTimeout(() => {
+    printWindow.focus();
+    printWindow.print();
+  }, 250);
 }
 
 interface ReceiptProps {

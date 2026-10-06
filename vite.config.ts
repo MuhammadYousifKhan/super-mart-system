@@ -4,6 +4,8 @@ import path from "path";
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
+  // Relative asset paths so the built app also loads from file:// inside Electron.
+  base: "./",
   server: {
     host: "::",
     port: 8080,

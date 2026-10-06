@@ -303,6 +303,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [isHydrated, setIsHydrated] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const pendingSyncTimer = useRef<number | null>(null);
+  const signedInRef = useRef(!!user);
+  signedInRef.current = !!user;
   // Always the latest products, so stock maths never starts from a stale snapshot.
   const productsRef = useRef<Product[]>([]);
   productsRef.current = products;
@@ -3584,9 +3586,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    const toastId = toast.loading(pending > 0 ? `Syncing ${pending} pending changes...` : 'Checking for updates...');
+    const toastId = toast.loading(pending > 0 ? `Syncing ${pending} pending changes...` : 'Syncing with cloud...');
     const result = await processPendingSyncQueue();
     toast.dismiss(toastId);
+    // Signed out while syncing: nothing more to tell the next screen.
+    if (!signedInRef.current) return;
 
     if (result.failed > 0) {
       toast.error(

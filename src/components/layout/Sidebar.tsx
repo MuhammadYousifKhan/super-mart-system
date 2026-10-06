@@ -200,14 +200,17 @@ export function Sidebar() {
             {theme === 'dark' ? 'Light Mode' : 'Dark Mode'}
           </Button>
 
+          {/* Kept apart from Sync to Cloud so Sign Out is never clicked by mistake */}
+          <div className="mt-3 pt-3 border-t border-border/30">
           <Button
             variant="ghost"
-            className="w-full justify-start text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent transition-all border border-transparent hover:border-border/30 rounded-xl"
+            className="w-full justify-start text-sidebar-foreground/70 hover:text-destructive hover:bg-destructive/10 transition-all border border-transparent hover:border-destructive/30 rounded-xl"
             onClick={logout}
           >
             <LogOut className="w-4 h-4 mr-3" />
             Sign Out
           </Button>
+          </div>
         </div>
       </div>
     </aside>

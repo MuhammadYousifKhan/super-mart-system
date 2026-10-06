@@ -122,7 +122,6 @@ export function CheckoutModal({ open, onOpenChange, onComplete }: CheckoutModalP
 
       clearCart();
       resetForm();
-      toast.success('Transaction completed!');
       onComplete(order);
     } catch (error) {
       console.error('Checkout error:', error);
