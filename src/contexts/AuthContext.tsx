@@ -43,7 +43,68 @@ function saveLocalUsers(users: UserCredentials[]) {
 }
 
 // ============================================================
-// Supabase helpers (unchanged, used only when Supabase is configured)
+// Saved profile
+// The signed-in user is remembered on this PC until they sign out, so the app can
+// reopen (even without internet) without asking the server who they are.
+// ============================================================
+const CACHED_PROFILE_KEY = 'pos_cached_profile_v1';
+
+function readCachedProfile(): User | null {
+  try {
+    const raw = localStorage.getItem(CACHED_PROFILE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && parsed.id && parsed.email && parsed.role ? (parsed as User) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedProfile(user: User) {
+  try {
+    localStorage.setItem(CACHED_PROFILE_KEY, JSON.stringify(user));
+  } catch { /* storage full or blocked: the app still works for this run */ }
+}
+
+function clearCachedProfile() {
+  try {
+    localStorage.removeItem(CACHED_PROFILE_KEY);
+  } catch { /* ignore */ }
+}
+
+function cachedRoleFor(userId: string): UserRole | null {
+  const cached = readCachedProfile();
+  return cached && cached.id === userId ? cached.role : null;
+}
+
+/** Removes the Supabase session from this PC (signOut cannot do it while offline). */
+function clearStoredSupabaseSession() {
+  try {
+    Object.keys(localStorage)
+      .filter((key) => key.startsWith('sb-') && key.endsWith('-auth-token'))
+      .forEach((key) => localStorage.removeItem(key));
+  } catch { /* ignore */ }
+}
+
+function isNetworkLikeError(err: unknown): boolean {
+  const name = (err as { name?: string } | null)?.name ?? '';
+  const status = (err as { status?: number } | null)?.status;
+  const message = (err instanceof Error ? err.message : typeof err === 'string' ? err : JSON.stringify(err ?? '')).toLowerCase();
+  return (
+    name === 'AuthRetryableFetchError' ||
+    status === 0 ||
+    message.includes('failed to fetch') ||
+    message.includes('networkerror') ||
+    message.includes('network request failed') ||
+    message.includes('load failed') ||
+    message.includes('timed out') ||
+    message.includes('name_not_resolved') ||
+    message.includes('err_internet_disconnected')
+  );
+}
+
+// ============================================================
+// Supabase helpers (used only when Supabase is configured)
 // ============================================================
 
 function withTimeout<T>(promise: PromiseLike<T>, timeoutMs: number, timeoutMessage: string): Promise<T> {
@@ -55,7 +116,7 @@ function withTimeout<T>(promise: PromiseLike<T>, timeoutMs: number, timeoutMessa
   ]);
 }
 
-const SESSION_REQUEST_TIMEOUT_MS = 15000;
+const SESSION_REQUEST_TIMEOUT_MS = 8000;
 const PROFILE_REQUEST_TIMEOUT_MS = 10000;
 
 type UserRoleRow = {
@@ -123,10 +184,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const applyUser = useCallback((next: User) => {
+    setUser(next);
+    writeCachedProfile(next);
+  }, []);
+
   const loadUserProfile = useCallback(async (userId: string, email: string, authUser: SupabaseAuthUser | null = null) => {
     try {
+      // Falls back to the role saved at the last successful sign-in, so an admin who is offline
+      // is not demoted to cashier just because the role lookup could not reach the server.
       const lastKnownRoleForThisUser: UserRole | null =
-        currentUserRef.current?.id === userId ? currentUserRef.current.role : null;
+        currentUserRef.current?.id === userId ? currentUserRef.current.role : cachedRoleFor(userId);
 
       // Primary lookup by authenticated user id
       const { data: roleByUserId, error: byUserIdError } = await withTimeout(
@@ -151,7 +219,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           toast.warning('Could not load your role. Defaulting to Cashier. Check RLS + user_roles row.');
         }
 
-        setUser({
+        applyUser({
           id: userId,
           email,
           fullName: resolveDisplayNameFromAuthUser(authUser, email),
@@ -185,7 +253,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             toast.warning('Could not load your role. Defaulting to Cashier. Check RLS + user_roles row.');
           }
 
-          setUser({
+          applyUser({
             id: userId,
             email,
             fullName: resolveDisplayNameFromAuthUser(authUser, email),
@@ -200,7 +268,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       if (resolvedRoleRow) {
         const resolvedRole = normalizeUserRole(resolvedRoleRow.role);
-        setUser({
+        applyUser({
           id: userId,
           email,
           fullName: resolveDisplayName(resolvedRoleRow, email),
@@ -209,7 +277,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (resolvedRole === 'admin') fetchAllUsers();
       } else {
         console.warn('No role row found in user_roles for this login. Falling back to cashier role.');
-        setUser({
+        applyUser({
           id: userId,
           email,
           fullName: resolveDisplayNameFromAuthUser(authUser, email),
@@ -227,16 +295,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         console.error("Failed to load user profile:", err);
       }
       // Fallback if request fails (e.g., DNS error after successfully caching session)
-      setUser({
+      applyUser({
         id: userId,
         email: email,
         fullName: resolveDisplayNameFromAuthUser(authUser, email),
-        role: (currentUserRef.current?.id === userId ? currentUserRef.current.role : null) ?? 'cashier',
+        role: (currentUserRef.current?.id === userId ? currentUserRef.current.role : cachedRoleFor(userId)) ?? 'cashier',
       });
     } finally {
       setIsLoading(false);
     }
-  }, [fetchAllUsers]);
+  }, [fetchAllUsers, applyUser]);
 
   useEffect(() => {
     if (IS_LOCAL_MODE) {
@@ -246,7 +314,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         'color: #f59e0b; font-weight: bold;'
       );
 
-      const savedSession = sessionStorage.getItem('pos_local_session');
+      const savedSession = localStorage.getItem('pos_local_session');
       if (savedSession) {
         try {
           setUser(JSON.parse(savedSession));
@@ -257,8 +325,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return;
     }
 
+    // Open straight from the saved profile (works offline); the checks below confirm it.
+    const cached = readCachedProfile();
+    if (cached) {
+      setUser(cached);
+      setIsLoading(false);
+    }
+
+    const endSession = () => {
+      clearCachedProfile();
+      clearStoredSupabaseSession();
+      setUser(null);
+      setIsLoading(false);
+    };
+
     const checkSession = async () => {
-      setIsLoading(true);
+      if (!cached) setIsLoading(true);
       try {
         const { data: { session }, error } = await withTimeout(
           supabase.auth.getSession(),
@@ -267,19 +349,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         );
 
         if (error) {
+          if (isNetworkLikeError(error) || !navigator.onLine) {
+            // Can't reach the server: stay signed in from the saved profile.
+            setIsLoading(false);
+            return;
+          }
+          // The server rejected the stored session (e.g. revoked): sign out for real.
           console.error('Auth session error:', error);
-          setIsLoading(false);
+          endSession();
           return;
         }
 
         if (session?.user) {
           await loadUserProfile(session.user.id, session.user.email!, session.user);
-        } else {
+        } else if (cached && !navigator.onLine) {
           setIsLoading(false);
+        } else {
+          endSession();
         }
       } catch (err) {
+        // Timeout or no connection: keep working from the saved profile.
         const message = err instanceof Error ? err.message : String(err);
-        console.error('Failed to check session. Check network or Supabase URL:', message);
+        console.warn('Could not verify the session (offline?):', message);
         setIsLoading(false);
       }
     };
@@ -291,17 +382,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       if (session?.user) {
         const existingUser = currentUserRef.current;
-        
+
         // Only trigger global loading if we don't have a user yet, or if the user changed.
         // This prevents the "blank screen" blink on tab focus/background refresh.
         const isNewUserOrLogin = !existingUser || existingUser.id !== session.user.id;
-        
+
         if (isNewUserOrLogin) {
           setIsLoading(true);
         }
-        
+
         await loadUserProfile(session.user.id, session.user.email!, session.user);
       } else {
+        clearCachedProfile();
         setUser(null);
         setIsLoading(false);
       }
@@ -333,7 +425,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           role: match.role,
         };
         setUser(localUser);
-        sessionStorage.setItem('pos_local_session', JSON.stringify(localUser));
+        localStorage.setItem('pos_local_session', JSON.stringify(localUser));
         setIsLoading(false);
         return true;
       } else {
@@ -345,6 +437,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     // SUPABASE MODE
     try {
+      // Sign-in is the one step that needs internet. (Auto refresh is stopped after an offline sign-out.)
+      void supabase.auth.startAutoRefresh();
       const { data, error } = await supabase.auth.signInWithPassword({ email, password });
 
       if (error) {
@@ -371,7 +465,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         message.includes('name_not_resolved');
 
       if (isNetworkError) {
-        toast.error('Unable to reach Supabase. Verify VITE_SUPABASE_URL and your internet connection.');
+        toast.error('No internet connection. You need to be online to sign in.');
       } else {
         toast.error('Login failed. Please try again.');
       }
@@ -385,13 +479,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Logout
   // ----------------------------------------------------------
   const logout = async () => {
+    // Forget the saved profile first so the app can never reopen as this user after sign-out.
+    clearCachedProfile();
+    setUser(null);
+
     if (IS_LOCAL_MODE) {
-      sessionStorage.removeItem('pos_local_session');
-      setUser(null);
+      localStorage.removeItem('pos_local_session');
       return;
     }
-    await supabase.auth.signOut();
-    setUser(null);
+
+    let revokedOnServer = true;
+    try {
+      const { error } = await supabase.auth.signOut();
+      revokedOnServer = !error;
+    } catch {
+      revokedOnServer = false;
+    }
+
+    if (!revokedOnServer) {
+      // Offline: signOut leaves the session on this PC, so remove it ourselves and stop the
+      // client from refreshing (and re-saving) it if the connection comes back.
+      await supabase.auth.stopAutoRefresh();
+      clearStoredSupabaseSession();
+    }
   };
 
   // ----------------------------------------------------------

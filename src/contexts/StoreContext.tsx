@@ -1014,8 +1014,22 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // Load data from Supabase
   useEffect(() => {
     const loadUnitsFallback = async (): Promise<Unit[]> => {
-      const saved = await loadArrayFromDexie('units');
-      return saved.length ? saved : SAMPLE_UNITS;
+      // Units are seeded in the database; sample data is only for local (no Supabase) mode.
+      return await loadArrayFromDexie('units');
+    };
+
+    // A session that is valid right now (not just stored). Without one the database would
+    // answer with empty lists, which must never replace the local copy.
+    const getLiveSession = async () => {
+      try {
+        const result = await Promise.race([
+          supabase.auth.getSession(),
+          new Promise<never>((_, reject) => window.setTimeout(() => reject(new Error('timeout')), 8000)),
+        ]);
+        return result.error ? null : result.data.session;
+      } catch {
+        return null;
+      }
     };
 
     const fetchData = async () => {
@@ -1025,13 +1039,27 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         // Check if Supabase is configured
         if (!import.meta.env.VITE_SUPABASE_URL) {
           console.warn('Supabase not configured, using local storage fallback');
-          await loadFromDexie();
+          await loadFromDexie(true);
           setLoading(false);
           return;
         }
 
-        // Tables require a signed-in user; fetching earlier would return empty lists.
+        // Tables require a signed-in user. Before sign-in only the saved store name/logo is
+        // loaded, for the login screen.
         if (!user) {
+          const localSettings = await loadSettingsFromDexie();
+          if (localSettings) setSettings({ ...DEFAULT_SETTINGS, ...localSettings });
+          setLoading(false);
+          return;
+        }
+
+        // Show the saved local copy straight away so the app opens instantly and works offline.
+        if (!isHydrated) await loadFromDexie(false);
+
+        // Only talk to the server with a live session; otherwise keep working from the local copy.
+        const liveSession = await getLiveSession();
+        if (!liveSession) {
+          toast.warning('Working offline. Changes are saved on this device and will sync when the connection returns.');
           setLoading(false);
           return;
         }
@@ -1145,13 +1173,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         if (!settingsError && settingsData) {
           setSettings({
             storeName: settingsData.store_name,
-            address: settingsData.address,
-            phone: settingsData.phone,
+            address: settingsData.address ?? '',
+            phone: settingsData.phone ?? '',
             taxRate: settingsData.tax_rate,
             cardFeePercent: settingsData.card_fee_percent ?? DEFAULT_SETTINGS.cardFeePercent,
-            receiptFooterMessage: settingsData.receipt_footer_message,
+            receiptFooterMessage: settingsData.receipt_footer_message ?? '',
             allowNegativeStock: settingsData.allow_negative_stock,
-            logo: settingsData.logo,
+            logo: settingsData.logo ?? undefined,
           });
         } else {
           const localSettings = await loadSettingsFromDexie();
@@ -1321,21 +1349,23 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           console.error('Error fetching data from Supabase:', error);
           toast.error('Failed to load data from database');
         }
-        await loadFromDexie();
+        await loadFromDexie(false);
       } finally {
         setLoading(false);
       }
     };
 
-    const loadFromDexie = async () => {
+    // Sample products/units/categories are for the no-Supabase demo only. With a database they would
+    // reference rows that don't exist there and break every sale that includes them.
+    const loadFromDexie = async (allowSamples: boolean) => {
       const dbProducts = await loadArrayFromDexie('products');
-      setProducts(dbProducts.length ? dbProducts : SAMPLE_PRODUCTS);
-      
+      setProducts(dbProducts.length || !allowSamples ? dbProducts : SAMPLE_PRODUCTS);
+
       const dbUnits = await loadArrayFromDexie('units');
-      setUnits(dbUnits.length ? dbUnits : SAMPLE_UNITS);
-      
+      setUnits(dbUnits.length || !allowSamples ? dbUnits : SAMPLE_UNITS);
+
       const dbCategories = await loadArrayFromDexie('categories');
-      setCategories(dbCategories.length ? dbCategories : SAMPLE_CATEGORIES);
+      setCategories(dbCategories.length || !allowSamples ? dbCategories : SAMPLE_CATEGORIES);
       
       const dbOrders: Order[] = await loadArrayFromDexie('orders');
       setOrders(dbOrders.sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
@@ -1364,7 +1394,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const handleOnline = () => {
-      void processPendingSyncQueue();
+      void processPendingSyncQueue().then((result) => {
+        if (result.failed === 0 && !result.reason) setRefreshKey((k) => k + 1);
+      });
     };
 
     window.addEventListener('online', handleOnline);
@@ -1439,6 +1471,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     if (!isHydrated) return;
     void saveArrayToDexie('supplierPaymentSchedules', supplierPaymentSchedules);
   }, [supplierPaymentSchedules, isHydrated]);
+
+  useEffect(() => {
+    document.title = settings.storeName?.trim() || 'Point of Sale';
+  }, [settings.storeName]);
 
   // Sales history, bill-edit history and settings are also kept locally so the app can start offline.
   useEffect(() => {
@@ -2347,14 +2383,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
     if (import.meta.env.VITE_SUPABASE_URL) {
       const dbUpdates: any = {};
-      if (updates.storeName) dbUpdates.store_name = updates.storeName;
-      if (updates.address) dbUpdates.address = updates.address;
-      if (updates.phone) dbUpdates.phone = updates.phone;
+      if (updates.storeName !== undefined) dbUpdates.store_name = updates.storeName;
+      if (updates.address !== undefined) dbUpdates.address = updates.address;
+      if (updates.phone !== undefined) dbUpdates.phone = updates.phone;
       if (updates.taxRate !== undefined) dbUpdates.tax_rate = updates.taxRate;
       if (updates.cardFeePercent !== undefined) dbUpdates.card_fee_percent = updates.cardFeePercent;
-      if (updates.receiptFooterMessage) dbUpdates.receipt_footer_message = updates.receiptFooterMessage;
+      if (updates.receiptFooterMessage !== undefined) dbUpdates.receipt_footer_message = updates.receiptFooterMessage;
       if (updates.allowNegativeStock !== undefined) dbUpdates.allow_negative_stock = updates.allowNegativeStock;
-      if (updates.logo) dbUpdates.logo = updates.logo;
+      // Removing the logo arrives as `logo: undefined` and must clear it.
+      if ('logo' in updates) dbUpdates.logo = updates.logo ?? null;
 
       // Upsert settings (assuming ID 1 for single row settings)
       const { error } = await supabase

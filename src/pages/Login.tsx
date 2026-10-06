@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/useAuth';
+import { useStore } from '@/contexts/useStore';
 import { AlertCircle, Eye, EyeOff, ArrowLeft, Mail, Lock, Loader2, ShieldCheck, Zap, BarChart3 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -170,6 +171,12 @@ function ParticleCanvas() {
    LOGIN COMPONENT
    ══════════════════════════════════════════════════════════════ */
 export default function Login() {
+  const { settings } = useStore();
+  // Name/logo come from the store settings saved on this PC; the last word gets the accent colour.
+  const storeName = settings.storeName?.trim() || 'Point of Sale';
+  const nameWords = storeName.split(/\s+/);
+  const nameAccent = nameWords.pop() as string;
+  const nameLead = nameWords.join(' ');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -269,17 +276,21 @@ export default function Login() {
           {/* Logo */}
           <div className="lg-hero-logo">
             <div className="lg-hero-logo-inner">
+              {settings.logo ? (
+                <img src={settings.logo} alt={storeName} className="w-full h-full object-contain p-2" />
+              ) : (
               <svg viewBox="0 0 24 24" fill="none" className="lg-hero-logo-svg">
                 <path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
                 <line x1="3" y1="6" x2="21" y2="6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
                 <path d="M16 10a4 4 0 01-8 0" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
               </svg>
+              )}
             </div>
             <div className="lg-hero-logo-pulse" />
           </div>
 
           <h1 className="lg-hero-title">
-            POS <span className="lg-hero-title-accent">System Name</span>
+            {nameLead && `${nameLead} `}<span className="lg-hero-title-accent">{nameAccent}</span>
           </h1>
 
           <p className="lg-hero-tagline">
@@ -327,13 +338,17 @@ export default function Login() {
           {/* Mobile-only branding */}
           <div className="lg-mobile-brand">
             <div className="lg-mobile-logo">
+              {settings.logo ? (
+                <img src={settings.logo} alt={storeName} className="w-full h-full object-contain" />
+              ) : (
               <svg viewBox="0 0 24 24" fill="none" className="lg-mobile-logo-svg">
                 <path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
                 <line x1="3" y1="6" x2="21" y2="6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
                 <path d="M16 10a4 4 0 01-8 0" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
               </svg>
+              )}
             </div>
-            <span className="lg-mobile-brand-text">POS System Name</span>
+            <span className="lg-mobile-brand-text">{storeName}</span>
           </div>
 
           {/* Greeting */}
@@ -367,7 +382,7 @@ export default function Login() {
                     id="reset-email"
                     type="email"
                     className="lg-input"
-                    placeholder="you@pos-system.com"
+                    placeholder="you@example.com"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     onFocus={() => setFocusedField('reset-email')}
@@ -412,7 +427,7 @@ export default function Login() {
                     id="email"
                     type="email"
                     className="lg-input"
-                    placeholder="you@pos-system.com"
+                    placeholder="you@example.com"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     onFocus={() => setFocusedField('email')}
@@ -482,7 +497,7 @@ export default function Login() {
           {/* Footer */}
           <div className="lg-footer">
             <div className="lg-footer-line" />
-            <span className="lg-footer-text">POS System Name v2.0 — Enterprise Edition</span>
+            <span className="lg-footer-text">{storeName} — Point of Sale</span>
           </div>
         </div>
       </div>

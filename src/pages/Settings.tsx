@@ -29,7 +29,7 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
 import { toast } from 'sonner';
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import type { UserCredentials } from '@/types/pos';
 import { Upload, X, Store, User, Lock, Building2, FileImage, Users, Plus, Trash2, Mail, Eye, EyeOff } from 'lucide-react';
 
@@ -41,6 +41,20 @@ export default function Settings() {
   const [form, setForm] = useState(settings);
   const [logoPreview, setLogoPreview] = useState<string | undefined>(settings.logo);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Settings can finish loading after this page opened (e.g. right after a restart). Refresh the form
+  // from them unless something was already typed, so saving never overwrites real details with defaults.
+  const syncedSettingsRef = useRef(settings);
+  useEffect(() => {
+    const previous = syncedSettingsRef.current;
+    const untouched = JSON.stringify(form) === JSON.stringify(previous) && logoPreview === previous.logo;
+    if (untouched) {
+      setForm(settings);
+      setLogoPreview(settings.logo);
+    }
+    syncedSettingsRef.current = settings;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings]);
 
   // Credential state
   const currentUserCreds = getUsers().find(u => u.email === user?.email);
@@ -63,7 +77,17 @@ export default function Settings() {
   });
 
   const handleSave = () => {
-    updateSettings({ ...form, logo: logoPreview });
+    if (!form.storeName.trim()) {
+      toast.error('Store name is required');
+      return;
+    }
+    updateSettings({
+      ...form,
+      storeName: form.storeName.trim(),
+      address: form.address.trim(),
+      phone: form.phone.trim(),
+      logo: logoPreview,
+    });
     toast.success('Settings saved successfully');
   };
 

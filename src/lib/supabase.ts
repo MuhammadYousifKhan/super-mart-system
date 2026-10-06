@@ -15,7 +15,8 @@ export const supabase = createClient(
   supabaseAnonKey || 'placeholder',
   {
     auth: {
-      storage: typeof window !== 'undefined' ? window.sessionStorage : undefined,
+      // localStorage keeps the user signed in across app restarts until they sign out.
+      storage: typeof window !== 'undefined' ? window.localStorage : undefined,
       autoRefreshToken: true,
       persistSession: true,
       detectSessionInUrl: true
