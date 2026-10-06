@@ -1,3 +1,4 @@
+import { todayLocal, nextDueDate } from '@/lib/dates';
 import React, { useState, useEffect, useRef, useCallback, ReactNode } from 'react';
 import {
   Product,
@@ -46,6 +47,7 @@ export interface StoreContextType {
   addProduct: (product: Omit<Product, 'id'>) => void;
   updateProduct: (id: string, product: Partial<Product>) => void;
   deleteProducts: (ids: string[]) => void;
+  adjustProductStock: (productId: string, delta: number) => Promise<void>;
   getProductBySku: (sku: string) => Product | undefined;
 
   // Units
@@ -232,27 +234,11 @@ function loadPendingSyncQueue(): PendingSyncOperation[] {
 }
 
 function calculateNextReminderDate(currentDate: string, frequency: ReminderFrequency): string {
-  const baseDate = new Date(currentDate);
-  if (frequency === 'daily') {
-    baseDate.setDate(baseDate.getDate() + 1);
-  } else if (frequency === 'weekly') {
-    baseDate.setDate(baseDate.getDate() + 7);
-  } else {
-    baseDate.setMonth(baseDate.getMonth() + 1);
-  }
-  return baseDate.toISOString().slice(0, 10);
+  return nextDueDate(currentDate, frequency);
 }
 
 function calculateNextScheduleDate(currentDate: string, frequency: ScheduleFrequency): string {
-  const baseDate = new Date(currentDate);
-  if (frequency === 'daily') {
-    baseDate.setDate(baseDate.getDate() + 1);
-  } else if (frequency === 'weekly') {
-    baseDate.setDate(baseDate.getDate() + 7);
-  } else {
-    baseDate.setMonth(baseDate.getMonth() + 1);
-  }
-  return baseDate.toISOString().slice(0, 10);
+  return nextDueDate(currentDate, frequency);
 }
 
 const SAMPLE_UNITS: Unit[] = [
@@ -2750,7 +2736,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   };
 
   const getDueCustomerReminders = () => {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayLocal();
     return customerReminders.filter((reminder) => reminder.isActive && reminder.nextReminderDate <= today);
   };
 
@@ -3086,7 +3072,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    const purchaseDate = input.purchaseDate || new Date().toISOString().slice(0, 10);
+    const purchaseDate = input.purchaseDate || todayLocal();
     const createdAt = new Date().toISOString();
 
     const resolvedInvoiceNumber = input.invoiceNumber?.trim()
@@ -3415,7 +3401,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     supplierPaymentSchedules.filter((s) => s.supplierId === supplierId);
 
   const getDueSupplierPaymentSchedules = () => {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayLocal();
     return supplierPaymentSchedules.filter((s) => s.isActive && s.nextPaymentDate <= today);
   };
 
@@ -3584,6 +3570,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         addProduct,
         updateProduct,
         deleteProducts,
+        adjustProductStock,
         getProductBySku,
         units,
         addUnit,

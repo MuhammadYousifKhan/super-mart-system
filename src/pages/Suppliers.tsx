@@ -1,3 +1,4 @@
+import { todayLocal } from '@/lib/dates';
 import { useMemo, useState } from 'react';
 import { useStore } from '@/contexts/useStore';
 import { Supplier, ScheduleFrequency, SupplierPurchase } from '@/types/pos';
@@ -65,7 +66,7 @@ export default function Suppliers() {
 
   // Date range for ledger print
   const [ledgerFromDate, setLedgerFromDate] = useState('');
-  const [ledgerToDate, setLedgerToDate] = useState(new Date().toISOString().slice(0, 10));
+  const [ledgerToDate, setLedgerToDate] = useState(todayLocal());
 
   const [supplierDialogOpen, setSupplierDialogOpen] = useState(false);
   const [editingSupplier, setEditingSupplier] = useState<Supplier | null>(null);
@@ -85,14 +86,14 @@ export default function Suppliers() {
     supplierId: '',
     description: '',
     amount: '',
-    purchaseDate: new Date().toISOString().slice(0, 10),
+    purchaseDate: todayLocal(),
     invoiceNumber: '',
   });
 
   const [scheduleForm, setScheduleForm] = useState({
     supplierId: '',
     frequency: 'monthly' as ScheduleFrequency,
-    nextPaymentDate: new Date().toISOString().slice(0, 10),
+    nextPaymentDate: todayLocal(),
     amount: '',
     note: '',
   });
@@ -193,7 +194,7 @@ export default function Suppliers() {
       supplierId: purchaseForm.supplierId,
       description: '',
       amount: '',
-      purchaseDate: new Date().toISOString().slice(0, 10),
+      purchaseDate: todayLocal(),
       invoiceNumber: '',
     });
   };
@@ -217,7 +218,7 @@ export default function Suppliers() {
     setScheduleForm({
       supplierId: scheduleForm.supplierId,
       frequency: scheduleForm.frequency,
-      nextPaymentDate: new Date().toISOString().slice(0, 10),
+      nextPaymentDate: todayLocal(),
       amount: '',
       note: '',
     });
@@ -289,7 +290,7 @@ export default function Suppliers() {
 
   const openPrintDateDialog = () => {
     setLedgerFromDate('');
-    setLedgerToDate(new Date().toISOString().slice(0, 10));
+    setLedgerToDate(todayLocal());
     setShowDateRangeDialog(true);
   };
 

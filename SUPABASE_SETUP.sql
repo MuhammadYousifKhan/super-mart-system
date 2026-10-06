@@ -244,6 +244,19 @@ insert into public.units (id, name, description) values
   ('unit-ml', 'Milliliters', 'Volume in milliliters')
 on conflict (id) do nothing;
 
+-- Deleting a product or customer that already appears on sales used to fail in the database
+-- (and the app kept retrying). Sales keep their own copy of the product name/SKU and customer
+-- name, so the link can safely be cleared instead.
+alter table public.order_items drop constraint if exists order_items_product_id_fkey;
+alter table public.order_items
+  add constraint order_items_product_id_fkey
+  foreign key (product_id) references public.products(id) on delete set null;
+
+alter table public.orders drop constraint if exists orders_customer_id_fkey;
+alter table public.orders
+  add constraint orders_customer_id_fkey
+  foreign key (customer_id) references public.customers(id) on delete set null;
+
 -- Enable Row Level Security (RLS)
 alter table public.categories enable row level security;
 alter table public.units enable row level security;

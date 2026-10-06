@@ -256,12 +256,13 @@ export default function Inventory() {
         ),
       },
     ],
-    [categories]
+    [categories, units]
   );
 
   const table = useReactTable({
     data: products,
     columns,
+    getRowId: (row) => row.id,
     state: {
       sorting,
       globalFilter,
@@ -282,9 +283,14 @@ export default function Inventory() {
   const selectedCount = Object.keys(rowSelection).length;
 
   const handleBulkDelete = () => {
+    // Only rows currently visible (after search) are deleted, never ones hidden by the filter.
     const selectedIds = table
-      .getSelectedRowModel()
+      .getFilteredSelectedRowModel()
       .rows.map((row) => row.original.id);
+    if (selectedIds.length === 0) return;
+    if (!window.confirm(`Delete ${selectedIds.length} product${selectedIds.length === 1 ? '' : 's'}? This cannot be undone.`)) {
+      return;
+    }
     deleteProducts(selectedIds);
     setRowSelection({});
     toast.success(`Deleted ${selectedIds.length} products`);

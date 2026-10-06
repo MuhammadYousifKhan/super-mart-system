@@ -33,7 +33,7 @@ const productSchema = z.object({
   unitId: z.string().min(1, 'Unit is required'),
   costPrice: z.coerce.number().min(0, 'Must be positive'),
   sellingPrice: z.coerce.number().min(0, 'Must be positive'),
-  stockQuantity: z.coerce.number().int().min(0, 'Must be non-negative'),
+  stockQuantity: z.coerce.number().int(),
   lowStockThreshold: z.coerce.number().int().min(1, 'Must be at least 1'),
   expiryDate: z.string().optional(),
   barcode: z.string().max(100).optional(),
@@ -97,10 +97,30 @@ export function ProductForm({ product, onSuccess }: ProductFormProps) {
       return;
     }
 
+    const barcode = data.barcode?.trim().toLowerCase();
+    if (barcode) {
+      const sameBarcode = products.find(
+        (p) => p.barcode?.trim().toLowerCase() === barcode && p.id !== product?.id
+      );
+      if (sameBarcode) {
+        form.setError('barcode', { message: `Barcode already used by ${sameBarcode.name}` });
+        setIsSubmitting(false);
+        return;
+      }
+    }
+
     if (product) {
-      updateProduct(product.id, data);
+      // Stock is only sent when it was changed in this form; otherwise sales made while the
+      // form was open would be overwritten with the value it was opened with.
+      const { stockQuantity, ...otherFields } = data;
+      updateProduct(product.id, form.formState.dirtyFields.stockQuantity ? { ...otherFields, stockQuantity } : otherFields);
       toast.success('Product updated');
     } else {
+      if (data.stockQuantity < 0) {
+        form.setError('stockQuantity', { message: 'Must be non-negative' });
+        setIsSubmitting(false);
+        return;
+      }
       addProduct({
         sku: data.sku,
         name: data.name,

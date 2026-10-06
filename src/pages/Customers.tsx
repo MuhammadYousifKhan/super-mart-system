@@ -1,3 +1,4 @@
+import { todayLocal } from '@/lib/dates';
 import { useState } from 'react';
 import { useStore } from '@/contexts/useStore';
 import { Customer, CustomerTransaction, ReminderFrequency } from '@/types/pos';
@@ -96,7 +97,7 @@ export default function Customers() {
 
   // Date range for ledger print
   const [ledgerFromDate, setLedgerFromDate] = useState('');
-  const [ledgerToDate, setLedgerToDate] = useState(new Date().toISOString().slice(0, 10));
+  const [ledgerToDate, setLedgerToDate] = useState(todayLocal());
 
   // Form state
   const [formData, setFormData] = useState({
@@ -113,7 +114,7 @@ export default function Customers() {
 
   // Reminder form state
   const [reminderFrequency, setReminderFrequency] = useState<ReminderFrequency>('weekly');
-  const [nextReminderDate, setNextReminderDate] = useState(new Date().toISOString().slice(0, 10));
+  const [nextReminderDate, setNextReminderDate] = useState(todayLocal());
   const [reminderNote, setReminderNote] = useState('');
 
   // Edit transaction dialog state
@@ -257,7 +258,7 @@ export default function Customers() {
   const openReminderModal = (customer: Customer) => {
     setSelectedCustomer(customer);
     setReminderFrequency('weekly');
-    setNextReminderDate(new Date().toISOString().slice(0, 10));
+    setNextReminderDate(todayLocal());
     setReminderNote('');
     setShowReminderModal(true);
   };
@@ -329,7 +330,7 @@ export default function Customers() {
   const openPrintDateDialog = (customer: Customer) => {
     setSelectedCustomer(customer);
     setLedgerFromDate('');
-    setLedgerToDate(new Date().toISOString().slice(0, 10));
+    setLedgerToDate(todayLocal());
     setShowDateRangeDialog(true);
   };
 
