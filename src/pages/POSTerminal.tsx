@@ -45,6 +45,7 @@ import { toast } from 'sonner';
 import { Order, OrderItem } from '@/types/pos';
 import { format } from 'date-fns';
 import { POSNumpad } from '@/components/pos/POSNumpad';
+import { computeEditedOrderTotals } from '@/lib/orderMath';
 
 
 export default function POSTerminal() {
@@ -109,15 +110,24 @@ export default function POSTerminal() {
       ).slice(0, 5)
     : [];
 
-  // Calculate edit totals in real-time
-  const editSubtotal = editItems.reduce(
-    (sum, item) => sum + item.unitPrice * item.quantity - item.discountAmount,
-    0
-  );
-  const editTax = (editSubtotal * settings.taxRate) / 100;
-  const editCardFeeRate = (editPaymentMethod || selectedOrder?.paymentMethod) === 'card' ? (settings.cardFeePercent || 0) : 0;
-  const editCardFee = editCardFeeRate > 0 ? ((editSubtotal + editTax) * editCardFeeRate) / 100 : 0;
-  const editTotal = editSubtotal + editTax + editCardFee;
+  // Calculate edit totals in real-time (same rules the store applies when the bill is saved)
+  const editTotals = selectedOrder
+    ? computeEditedOrderTotals({
+        existingOrder: selectedOrder,
+        oldItems: getOrderItems(selectedOrder.id),
+        newItems: editItems,
+        paymentMethod: editPaymentMethod || selectedOrder.paymentMethod,
+        fallbackTaxRate: settings.taxRate,
+        fallbackCardFeePercent: settings.cardFeePercent || 0,
+      })
+    : null;
+  const editSubtotal = editTotals?.subtotal ?? 0;
+  const editGlobalDiscount = editTotals?.globalDiscount ?? 0;
+  const editTaxRate = editTotals?.taxRate ?? settings.taxRate;
+  const editTax = editTotals?.taxAmount ?? 0;
+  const editCardFeeRate = editTotals?.cardFeeRate ?? 0;
+  const editCardFee = editTotals?.cardFeeAmount ?? 0;
+  const editTotal = editTotals?.totalAmount ?? 0;
 
   const filteredProducts = products.filter(
     (p) =>
@@ -267,7 +277,15 @@ export default function POSTerminal() {
 
   // Hotkeys
   useEffect(() => {
+    const anyDialogOpen = isCheckoutOpen || isCartOpen || isManageBillsDialogOpen || isEditBillDialogOpen;
+
     const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const isSearchBox = !!target && target === searchInputRef.current;
+      // Typing in any other field (phone numbers, prices, SKUs...) must never trigger cart shortcuts.
+      const isTypingElsewhere =
+        !!target && !isSearchBox && !!target.closest('input, textarea, select, [contenteditable="true"]');
+
       // If receipt is showing, Enter starts a new sale
       if (showReceipt && e.key === 'Enter') {
         e.preventDefault();
@@ -281,8 +299,9 @@ export default function POSTerminal() {
         searchInputRef.current?.focus();
       } else if (e.key === 'F12') {
         e.preventDefault();
-        if (cart.length > 0) setIsCheckoutOpen(true);
+        if (cart.length > 0 && !isManageBillsDialogOpen && !isEditBillDialogOpen) setIsCheckoutOpen(true);
       } else if (e.key === 'Escape') {
+        if (isManageBillsDialogOpen || isEditBillDialogOpen) return; // the dialog closes itself
         e.preventDefault();
         if (isCheckoutOpen) {
           setIsCheckoutOpen(false);
@@ -291,47 +310,57 @@ export default function POSTerminal() {
         } else if (showReceipt) {
           setShowReceipt(false);
           setTimeout(() => searchInputRef.current?.focus(), 0);
-        } else {
+        } else if (cart.length > 0) {
           clearCart();
           toast.info('Cart cleared');
         }
       } else if (e.key === 'F9') {
         e.preventDefault();
-        if (cart.length > 0) {
+        if (cart.length > 0 && !isManageBillsDialogOpen && !isEditBillDialogOpen) {
           holdCart(`Bill held at ${new Date().toLocaleTimeString()}`);
           toast.success('Bill placed on hold');
         }
-      } else if (e.key === '+' || e.key === 'Add') {
-        // Adjust last item quantity (+)
-        if (cart.length > 0) {
-          e.preventDefault();
-          const lastItem = cart[cart.length - 1];
+      } else if (e.key === '+' || e.key === 'Add' || e.key === '-' || e.key === 'Subtract') {
+        if (anyDialogOpen || showReceipt || isTypingElsewhere || cart.length === 0) return;
+        // In the search box these keys only work while it is empty (SKUs like GROC-001 contain "-").
+        if (isSearchBox && (target as HTMLInputElement).value !== '') return;
+
+        e.preventDefault();
+        const lastItem = cart[cart.length - 1];
+        if (e.key === '+' || e.key === 'Add') {
           const newQty = lastItem.quantity + 1;
-          
-          if (lastItem.product.stockQuantity < newQty && !settings.allowNegativeStock) {
+          const liveStock =
+            products.find((p) => p.id === lastItem.product.id)?.stockQuantity ?? lastItem.product.stockQuantity;
+          if (liveStock < newQty && !settings.allowNegativeStock) {
             toast.error('Cannot add more: Out of stock');
           } else {
             updateCartItem(lastItem.product.id, { quantity: newQty });
           }
-        }
-      } else if (e.key === '-' || e.key === 'Subtract') {
-        // Adjust last item quantity (-)
-        if (cart.length > 0) {
-          e.preventDefault();
-          const lastItem = cart[cart.length - 1];
-          if (lastItem.quantity > 1) {
-            updateCartItem(lastItem.product.id, { quantity: lastItem.quantity - 1 });
-          } else {
-            removeFromCart(lastItem.product.id);
-            toast.info('Item removed from cart');
-          }
+        } else if (lastItem.quantity > 1) {
+          updateCartItem(lastItem.product.id, { quantity: lastItem.quantity - 1 });
+        } else {
+          removeFromCart(lastItem.product.id);
+          toast.info('Item removed from cart');
         }
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [cart.length, clearCart, isCheckoutOpen, isCartOpen, showReceipt]);
+  }, [
+    cart,
+    products,
+    settings.allowNegativeStock,
+    isCheckoutOpen,
+    isCartOpen,
+    isManageBillsDialogOpen,
+    isEditBillDialogOpen,
+    showReceipt,
+    clearCart,
+    holdCart,
+    updateCartItem,
+    removeFromCart,
+  ]);
 
   useEffect(() => {
     searchInputRef.current?.focus();
@@ -753,6 +782,10 @@ export default function POSTerminal() {
                 <Select
                   value={editCustomerId}
                   onValueChange={(val) => {
+                    if (val === 'none') {
+                      setEditCustomerId('');
+                      return;
+                    }
                     setEditCustomerId(val);
                     const customer = getCustomerById(val);
                     if (customer) {
@@ -820,9 +853,15 @@ export default function POSTerminal() {
               <div className="grid grid-cols-2 gap-1 text-sm">
                 <span className="text-muted-foreground">Subtotal</span>
                 <span className="text-right font-medium">{formatPKR(editSubtotal)}</span>
-                {settings.taxRate > 0 && (
+                {editGlobalDiscount > 0 && (
                   <>
-                    <span className="text-muted-foreground">Tax ({settings.taxRate}%)</span>
+                    <span className="text-muted-foreground">Cart discount</span>
+                    <span className="text-right font-medium text-success">-{formatPKR(editGlobalDiscount)}</span>
+                  </>
+                )}
+                {editTaxRate > 0 && (
+                  <>
+                    <span className="text-muted-foreground">Tax ({editTaxRate}%)</span>
                     <span className="text-right font-medium">{formatPKR(editTax)}</span>
                   </>
                 )}

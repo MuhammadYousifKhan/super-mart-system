@@ -25,6 +25,7 @@ import { StoreContext } from './StoreContextValue';
 import { supabase } from '@/lib/supabase';
 import { toast } from 'sonner';
 import { db, saveArrayToDexie, loadArrayFromDexie, saveSettingsToDexie, loadSettingsFromDexie } from '@/db/db';
+import { computeEditedOrderTotals } from '@/lib/orderMath';
 
 interface CreateOrderOptions {
   items: CartItem[];
@@ -316,6 +317,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [isHydrated, setIsHydrated] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const pendingSyncTimer = useRef<number | null>(null);
+  // Always the latest products, so stock maths never starts from a stale snapshot.
+  const productsRef = useRef<Product[]>([]);
+  productsRef.current = products;
   // The queue is read through refs so retry timers and in-flight runs never act on a stale copy.
   const pendingSyncOpsRef = useRef<PendingSyncOperation[]>(pendingSyncOps);
   pendingSyncOpsRef.current = pendingSyncOps;
@@ -1515,7 +1519,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       const dbUpdates: Record<string, unknown> = {};
       if (updates.sku) dbUpdates.sku = updates.sku;
       if (updates.name) dbUpdates.name = updates.name;
-      if (updates.description) dbUpdates.description = updates.description;
+      if (updates.description !== undefined) dbUpdates.description = updates.description;
       if (updates.categoryId) dbUpdates.category_id = updates.categoryId;
       if (updates.unitId) dbUpdates.unit_id = updates.unitId;
       if (updates.costPrice !== undefined) dbUpdates.cost_price = updates.costPrice;
@@ -1555,6 +1559,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       const updatedProducts = products.map((p) => (p.id === id ? { ...p, ...updates } : p));
       void saveArrayToDexie('products', updatedProducts);
     }
+  };
+
+  // Change stock by an amount (negative = sold) starting from the current value, not from a copy
+  // of the product taken earlier (cart item, open dialog, ...).
+  const adjustProductStock = (productId: string, delta: number) => {
+    const current = productsRef.current.find((p) => p.id === productId);
+    if (!current || delta === 0) return Promise.resolve();
+    const stockQuantity = current.stockQuantity + delta;
+    productsRef.current = productsRef.current.map((p) => (p.id === productId ? { ...p, stockQuantity } : p));
+    return updateProduct(productId, { stockQuantity });
   };
 
   const deleteProducts = async (ids: string[]) => {
@@ -1874,11 +1888,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setOrders((prev) => [order, ...prev]);
     setOrderItems((prev) => [...prev, ...newOrderItems]);
 
-    // Update stock locally
+    // Update stock from the current level (the cart's product copy may be out of date)
     items.forEach((item) => {
-      updateProduct(item.product.id, {
-        stockQuantity: item.product.stockQuantity - item.quantity,
-      });
+      void adjustProductStock(item.product.id, -item.quantity);
     });
 
     // If credit sale with customer, add credit transaction (Digi Khata)
@@ -1950,11 +1962,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
     // Restore stock for all items in the cancelled order.
     for (const item of relatedItems) {
-      const product = products.find((p) => p.id === item.productId);
-      if (!product) continue;
-      await updateProduct(item.productId, {
-        stockQuantity: product.stockQuantity + item.quantity,
-      });
+      await adjustProductStock(item.productId, item.quantity);
     }
 
     await updateOrder(id, { status: 'refunded' });
@@ -2092,41 +2100,39 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       previousItems: [...oldItems],
     };
 
-    // --- Restore stock for old items ---
+    // --- Stock: apply only the difference between the old and the new quantities ---
+    const stockDeltas = new Map<string, number>();
     for (const oi of oldItems) {
-      const product = products.find((p) => p.id === oi.productId);
-      if (product) {
-        await updateProduct(oi.productId, {
-          stockQuantity: product.stockQuantity + oi.quantity,
-        });
-      }
+      stockDeltas.set(oi.productId, (stockDeltas.get(oi.productId) || 0) + oi.quantity);
     }
-
-    // --- Deduct stock for new items ---
     for (const ni of newItems) {
-      // Re-fetch product after restoration above
-      const product = products.find((p) => p.id === ni.productId);
-      if (product) {
-        await updateProduct(ni.productId, {
-          stockQuantity: product.stockQuantity + (oldItems.find(o => o.productId === ni.productId)?.quantity || 0) - ni.quantity,
-        });
+      stockDeltas.set(ni.productId, (stockDeltas.get(ni.productId) || 0) - ni.quantity);
+    }
+
+    if (!settings.allowNegativeStock) {
+      for (const [productId, delta] of stockDeltas) {
+        const product = productsRef.current.find((p) => p.id === productId);
+        if (product && delta < 0 && product.stockQuantity + delta < 0) {
+          toast.error(`Insufficient stock for ${product.name}`);
+          return;
+        }
       }
     }
 
-    // --- Recalculate totals ---
-    const subtotal = Number(newItems.reduce((sum, item) => {
-      const itemTotal = item.unitPrice * item.quantity;
-      return sum + itemTotal - item.discountAmount;
-    }, 0).toFixed(2));
+    for (const [productId, delta] of stockDeltas) {
+      if (delta !== 0) await adjustProductStock(productId, delta);
+    }
 
-    const taxAmount = Number(((subtotal * settings.taxRate) / 100).toFixed(2));
-
+    // --- Recalculate totals (keeps the bill's cart-wide discount and the tax rate it was sold with) ---
     const paymentMethod = orderUpdates.paymentMethod || existingOrder.paymentMethod;
-    const cardFeeRate = paymentMethod === 'card' ? (settings.cardFeePercent || 0) : 0;
-    const cardFeeAmount = cardFeeRate > 0 ? Number(((subtotal + taxAmount) * cardFeeRate / 100).toFixed(2)) : 0;
-
-    const totalAmount = Number((subtotal + taxAmount + cardFeeAmount).toFixed(2));
-    const totalDiscount = Number(newItems.reduce((sum, item) => sum + item.discountAmount, 0).toFixed(2));
+    const { subtotal, taxAmount, cardFeeRate, cardFeeAmount, totalAmount, totalDiscount } = computeEditedOrderTotals({
+      existingOrder,
+      oldItems,
+      newItems,
+      paymentMethod,
+      fallbackTaxRate: settings.taxRate,
+      fallbackCardFeePercent: settings.cardFeePercent || 0,
+    });
 
     // --- LEDGER SYNCHRONIZATION (High Reliability) ---
     const finalPaymentMethod = orderUpdates.paymentMethod || existingOrder.paymentMethod;
@@ -2279,6 +2285,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       totalAmount,
       cardFeeAmount: cardFeeAmount || undefined,
       cardFeeRate: cardFeeRate || undefined,
+      // Changing to/from credit changes whether the bill counts as pending.
+      status: finalPaymentMethod === 'credit' ? 'credit' : 'completed',
     };
 
     setOrders((prev) =>
@@ -2293,8 +2301,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     if (import.meta.env.VITE_SUPABASE_URL) {
       // Delete old order items and insert new ones
       try {
-        await supabase.from('order_items').delete().eq('order_id', id);
-        await supabase.from('order_items').insert(
+        // Insert the new lines first and remove the old ones afterwards, so a failure never leaves the bill empty.
+        const insertResult = await supabase.from('order_items').insert(
           newOrderItems.map((item) => ({
             id: item.id,
             order_id: item.orderId,
@@ -2306,6 +2314,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             discount_amount: item.discountAmount,
           }))
         );
+        if (insertResult.error) throw insertResult.error;
+        const oldItemIds = oldItems.map((item) => item.id);
+        if (oldItemIds.length > 0) {
+          const deleteResult = await supabase.from('order_items').delete().in('id', oldItemIds);
+          if (deleteResult.error) throw deleteResult.error;
+        }
 
         const dbUpdates: any = {};
         if (orderUpdate.subtotal !== undefined) dbUpdates.subtotal = orderUpdate.subtotal;
@@ -2315,11 +2329,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         if (orderUpdate.paymentMethod !== undefined) dbUpdates.payment_method = orderUpdate.paymentMethod;
         if (orderUpdate.clientName !== undefined) dbUpdates.client_name = orderUpdate.clientName;
         if (orderUpdate.clientPhone !== undefined) dbUpdates.client_phone = orderUpdate.clientPhone;
-        if (orderUpdate.cardFeeAmount !== undefined) dbUpdates.card_fee_amount = orderUpdate.cardFeeAmount;
-        if (orderUpdate.cardFeeRate !== undefined) dbUpdates.card_fee_rate = orderUpdate.cardFeeRate;
+        // Written explicitly (0 when not a card sale) so a stale card fee never stays in the database.
+        dbUpdates.card_fee_amount = cardFeeAmount;
+        dbUpdates.card_fee_rate = cardFeeRate;
+        dbUpdates.status = orderUpdate.status;
         if (orderUpdate.customerId !== undefined) dbUpdates.customer_id = orderUpdate.customerId;
 
-        await supabase.from('orders').update(dbUpdates).eq('id', id);
+        const orderResult = await supabase.from('orders').update(dbUpdates).eq('id', id);
+        if (orderResult.error) throw orderResult.error;
       } catch (error) {
         console.error('Error updating order in database:', error);
         toast.error('Failed to sync edited bill to database');
@@ -3076,7 +3093,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       ? input.invoiceNumber.trim()
       : `INV-${purchaseDate.replace(/-/g, '')}-${Date.now().toString().slice(-6)}`;
 
-    const productsToUpdate = [...products];
+    const productsToUpdate = [...productsRef.current];
     let totalPurchaseAmount = 0;
 
     const itemSummaries: string[] = [];
@@ -3091,7 +3108,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      const originalProduct = products.find((p) => p.id === item.productId);
+      const originalProduct = productsRef.current.find((p) => p.id === item.productId);
       if (!originalProduct) {
         toast.error('One or more products were not found');
         return;
