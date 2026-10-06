@@ -40,8 +40,9 @@ export function printOrderReceipt(
           body {
             font-family: 'Inter', 'Segoe UI', Arial, sans-serif;
             font-size: 11px;
+            font-weight: 600;
             line-height: 1.4;
-            color: #1a1a1a;
+            color: #000;
             width: 72mm;
             max-width: 72mm;
             margin: 0 auto;
@@ -57,16 +58,17 @@ export function printOrderReceipt(
           }
 
           .store-name {
-            font-size: 16px;
-            font-weight: 700;
+            font-size: 17px;
+            font-weight: 800;
             letter-spacing: 1px;
             text-transform: uppercase;
             margin-bottom: 2px;
           }
 
           .store-details {
-            font-size: 9px;
-            color: #444;
+            font-size: 10px;
+            font-weight: 700;
+            color: #000;
             line-height: 1.5;
           }
 
@@ -85,14 +87,15 @@ export function printOrderReceipt(
 
           .invoice-number {
             text-align: center;
-            font-size: 10px;
-            color: #555;
+            font-size: 11px;
+            font-weight: 700;
+            color: #000;
             margin-bottom: 8px;
           }
 
           .order-info {
             padding: 8px 0;
-            border-bottom: 1px dashed #999;
+            border-bottom: 2px dashed #000;
             margin-bottom: 8px;
           }
 
@@ -105,13 +108,14 @@ export function printOrderReceipt(
           }
 
           .info-row .label {
-            font-weight: 600;
-            color: #555;
+            font-weight: 800;
+            color: #000;
             min-width: 55px;
           }
 
           .info-row .value {
             text-align: right;
+            font-weight: 700;
             flex: 1;
             word-break: break-word;
           }
@@ -124,8 +128,8 @@ export function printOrderReceipt(
             text-transform: uppercase;
             margin: 8px 0 4px;
             padding: 5px 0;
-            border-top: 1px dashed #999;
-            border-bottom: 1px dashed #999;
+            border-top: 2px dashed #000;
+            border-bottom: 2px dashed #000;
           }
 
           .item-table {
@@ -135,13 +139,13 @@ export function printOrderReceipt(
           }
 
           .item-table th {
-            font-size: 8px;
-            font-weight: 700;
+            font-size: 9px;
+            font-weight: 800;
             text-transform: uppercase;
             letter-spacing: 0.5px;
             padding: 4px 2px;
-            border-bottom: 1px solid #ccc;
-            color: #555;
+            border-bottom: 2px solid #000;
+            color: #000;
           }
 
           .item-table th:last-child,
@@ -155,26 +159,28 @@ export function printOrderReceipt(
           }
 
           .item-table td {
-            font-size: 9px;
+            font-size: 10px;
+            font-weight: 700;
             padding: 4px 2px;
-            border-bottom: 1px dotted #ddd;
+            border-bottom: 1px dotted #000;
             vertical-align: top;
           }
 
           .item-name {
-            font-weight: 500;
+            font-weight: 800;
           }
 
           .item-sku {
-            font-size: 7px;
-            color: #888;
+            font-size: 8px;
+            font-weight: 700;
+            color: #222;
             font-family: monospace;
           }
 
           .summary-section {
             margin: 10px 0;
             padding: 8px;
-            border: 1.5px solid #000;
+            border: 2px solid #000;
             border-radius: 3px;
           }
 
@@ -186,7 +192,7 @@ export function printOrderReceipt(
             text-transform: uppercase;
             margin-bottom: 6px;
             padding-bottom: 4px;
-            border-bottom: 1px solid #ddd;
+            border-bottom: 1.5px solid #000;
           }
 
           .summary-row {
@@ -194,26 +200,27 @@ export function printOrderReceipt(
             justify-content: space-between;
             padding: 2px 0;
             font-size: 10px;
+            font-weight: 700;
           }
 
           .summary-row.discount {
-            color: #555;
+            color: #000;
             font-style: italic;
           }
 
           .summary-row.grand-total {
             margin-top: 4px;
             padding-top: 6px;
-            border-top: 1.5px solid #000;
-            font-size: 13px;
-            font-weight: 700;
+            border-top: 2px solid #000;
+            font-size: 14px;
+            font-weight: 800;
           }
 
           .payment-info {
             margin: 8px 0;
             padding: 6px 0;
-            border-top: 1px dashed #999;
-            border-bottom: 1px dashed #999;
+            border-top: 2px dashed #000;
+            border-bottom: 2px dashed #000;
           }
 
           .credit-warning {
@@ -221,7 +228,7 @@ export function printOrderReceipt(
             padding: 6px;
             margin: 8px 0;
             border: 2px solid #000;
-            font-weight: 700;
+            font-weight: 800;
             font-size: 11px;
             text-transform: uppercase;
             letter-spacing: 1px;
@@ -235,23 +242,39 @@ export function printOrderReceipt(
           }
 
           .footer-message {
-            font-size: 10px;
-            font-weight: 500;
+            font-size: 11px;
+            font-weight: 700;
             margin-bottom: 4px;
           }
 
           .footer-generated {
-            font-size: 8px;
-            color: #888;
+            font-size: 9px;
+            font-weight: 700;
+            color: #222;
             margin-top: 4px;
           }
 
           .divider-dots {
             text-align: center;
             letter-spacing: 3px;
-            color: #ccc;
+            color: #000;
             font-size: 8px;
             margin: 4px 0;
+          }
+
+          .footer-credit {
+            margin-top: 8px;
+            padding-top: 6px;
+            border-top: 2px solid #000;
+            text-align: center;
+            font-size: 10px;
+            font-weight: 700;
+          }
+
+          .footer-credit .team {
+            font-size: 12px;
+            font-weight: 800;
+            letter-spacing: 1px;
           }
 
           @media print {
@@ -263,6 +286,8 @@ export function printOrderReceipt(
               width: 72mm;
               max-width: 72mm;
               padding: 3mm;
+              -webkit-print-color-adjust: exact;
+              print-color-adjust: exact;
             }
           }
         </style>
@@ -394,6 +419,10 @@ export function printOrderReceipt(
           <div class="divider-dots">• • • • • • • • • • •</div>
           <div class="footer-generated">Generated: ${new Date().toLocaleString()}</div>
         </div>
+        <div class="footer-credit">
+          <div class="team">Team Axioms</div>
+          <div>Contact: 03367544180</div>
+        </div>
       </body>
     </html>
   `);
@@ -465,6 +494,7 @@ export function Receipt({ order, showActions = false }: ReceiptProps) {
       text += `\n⚠️ *CREDIT SALE*`;
     }
     text += `\n\n${settings.receiptFooterMessage}`;
+    text += `\n\nTeam Axioms\nContact: 03367544180`;
     return text;
   };
 
