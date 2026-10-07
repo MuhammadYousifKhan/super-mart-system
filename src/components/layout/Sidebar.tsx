@@ -17,10 +17,16 @@ import {
   Sun,
   Moon,
   CloudUpload,
+  CloudOff,
+  Cloud,
+  RefreshCw,
+  AlertTriangle,
+  FileBarChart,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useTheme } from '@/contexts/ThemeContext';
 import appIcon from '@/assets/supermart-icon.svg';
+import { formatDistanceToNow } from 'date-fns';
 
 const adminNavItems = [
   { path: '/pos', icon: ShoppingCart, label: 'POS Terminal' },
@@ -28,6 +34,7 @@ const adminNavItems = [
   { path: '/customers', icon: Users, label: 'Customers' },
   { path: '/suppliers', icon: Truck, label: 'Suppliers' },
   { path: '/analytics', icon: BarChart3, label: 'Analytics' },
+  { path: '/reports', icon: FileBarChart, label: 'Reports' },
   { path: '/settings', icon: Settings, label: 'Settings' },
 ];
 
@@ -40,7 +47,7 @@ const cashierNavItems = [
 
 export function Sidebar() {
   const { user, logout, isAdmin } = useAuth();
-  const { settings, manualSync } = useStore();
+  const { settings, manualSync, syncStatus } = useStore();
   const { theme, toggle } = useTheme();
   const location = useLocation();
   const [isMobileOpen, setIsMobileOpen] = useState(false);
@@ -178,14 +185,7 @@ export function Sidebar() {
           </div>
         </div>
         <div className="space-y-2">
-          <Button
-            variant="ghost"
-            className="w-full justify-start text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent transition-all border border-transparent hover:border-border/30 rounded-xl"
-            onClick={() => void manualSync()}
-          >
-            <CloudUpload className="w-4 h-4 mr-3" />
-            Sync to Cloud
-          </Button>
+          <SyncStatusButton status={syncStatus} onSync={() => void manualSync()} />
 
           <Button
             variant="ghost"
@@ -211,5 +211,61 @@ export function Sidebar() {
       </div>
     </aside>
     </>
+  );
+}
+
+// Sync runs on its own in the background; this shows where it stands and lets the user force it.
+function SyncStatusButton({
+  status,
+  onSync,
+}: {
+  status: ReturnType<typeof useStore>['syncStatus'];
+  onSync: () => void;
+}) {
+  const n = (count: number) => `${count} change${count === 1 ? '' : 's'}`;
+  let icon = <Cloud className="w-4 h-4 text-success" />;
+  let title = 'All changes synced';
+  let detail = status.live
+    ? 'Live with other PCs'
+    : status.lastSyncedAt
+      ? `Updated ${formatDistanceToNow(new Date(status.lastSyncedAt), { addSuffix: true })}`
+      : 'Syncs automatically';
+
+  if (status.needsDbUpdate) {
+    icon = <AlertTriangle className="w-4 h-4 text-warning" />;
+    title = 'Database update needed';
+    detail = status.pending > 0 ? `${n(status.pending)} saved here, waiting` : 'Run MULTI_PC_SETUP.sql';
+  } else if (status.syncing) {
+    icon = <RefreshCw className="w-4 h-4 animate-spin text-primary" />;
+    title = 'Syncing...';
+    detail = status.pending > 0 ? `Uploading ${n(status.pending)}` : 'Checking for updates';
+  } else if (!status.online) {
+    icon = <CloudOff className="w-4 h-4 text-warning" />;
+    title = 'Offline';
+    detail = status.pending > 0 ? `${n(status.pending)} saved here, will upload` : 'Changes are saved on this device';
+  } else if (status.failed > 0) {
+    icon = <AlertTriangle className="w-4 h-4 text-destructive" />;
+    title = `${n(status.failed)} not uploaded`;
+    detail = 'Click to retry';
+  } else if (status.pending > 0) {
+    icon = <CloudUpload className="w-4 h-4 text-warning" />;
+    title = `${n(status.pending)} waiting to upload`;
+    detail = 'Retrying automatically';
+  }
+
+  return (
+    <Button
+      variant="ghost"
+      className="w-full h-auto py-2 justify-start text-left text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent transition-all border border-transparent hover:border-border/30 rounded-xl"
+      onClick={onSync}
+      title={status.lastError ? `Last error: ${status.lastError}
+Click to sync now` : 'Click to sync now'}
+    >
+      <span className="mr-3 shrink-0">{icon}</span>
+      <span className="min-w-0 flex flex-col">
+        <span className="text-sm truncate">{title}</span>
+        <span className="text-xs text-sidebar-foreground/50 truncate font-normal">{detail}</span>
+      </span>
+    </Button>
   );
 }

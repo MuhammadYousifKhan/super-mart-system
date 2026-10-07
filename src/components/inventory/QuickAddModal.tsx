@@ -46,7 +46,7 @@ export function QuickAddModal({ open, onOpenChange }: QuickAddModalProps) {
     }
 
     // Adds to the stock as it is now, so sales made while this dialog was open are kept.
-    void adjustProductStock(foundProduct.id, addQty);
+    void adjustProductStock(foundProduct.id, addQty, 'Quick add');
 
     toast.success(`Added ${addQty} units to ${foundProduct.name}`);
     setSku('');
