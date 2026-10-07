@@ -148,6 +148,8 @@ export interface OrderItem {
   productSku: string;
   quantity: number;
   unitPriceAtSale: number;
+  /** Product cost price when the sale was made. Missing on sales recorded before this was tracked. */
+  unitCostAtSale?: number;
   discountAmount: number;
 }
 

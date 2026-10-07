@@ -197,6 +197,8 @@ create table if not exists public.order_items (
   unit_price_at_sale numeric not null,
   discount_amount numeric default 0
 );
+-- Cost price at the time of sale, so profit reports stay correct when a product's cost changes later.
+alter table public.order_items add column if not exists unit_cost_at_sale numeric;
 
 -- Store Settings Table
 create table if not exists public.store_settings (
@@ -445,3 +447,5 @@ create index if not exists idx_suppliers_phone on public.suppliers(phone);
 create index if not exists idx_supplier_purchases_supplier_id on public.supplier_purchases(supplier_id);
 create index if not exists idx_supplier_payment_schedules_supplier_id on public.supplier_payment_schedules(supplier_id);
 create index if not exists idx_supplier_payment_schedules_next_date on public.supplier_payment_schedules(next_payment_date);
+
+-- Next: run MULTI_PC_SETUP.sql (stock movements, ledger-based totals, live updates between PCs).

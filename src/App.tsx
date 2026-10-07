@@ -12,6 +12,7 @@ import Login from "./pages/Login";
 import POSTerminal from "./pages/POSTerminal";
 import Inventory from "./pages/Inventory";
 import Analytics from "./pages/Analytics";
+import Reports from "./pages/Reports";
 import Customers from "./pages/Customers";
 import Suppliers from "./pages/Suppliers";
 import Settings from "./pages/Settings";
@@ -41,6 +42,7 @@ function AppRoutes() {
       <Route path="/customers" element={<ProtectedRoute><AppLayout><Customers /></AppLayout></ProtectedRoute>} />
       <Route path="/suppliers" element={<ProtectedRoute><AppLayout><Suppliers /></AppLayout></ProtectedRoute>} />
       <Route path="/analytics" element={<ProtectedRoute adminOnly><AppLayout><Analytics /></AppLayout></ProtectedRoute>} />
+      <Route path="/reports" element={<ProtectedRoute adminOnly><AppLayout><Reports /></AppLayout></ProtectedRoute>} />
       <Route path="/settings" element={<ProtectedRoute adminOnly><AppLayout><Settings /></AppLayout></ProtectedRoute>} />
       <Route path="*" element={<NotFound />} />
     </Routes>

@@ -1,5 +1,6 @@
-const { app, BrowserWindow, shell, Menu } = require('electron');
+const { app, BrowserWindow, shell, Menu, ipcMain } = require('electron');
 const path = require('path');
+const { printRaw } = require('./printer.cjs');
 
 // Only one copy of the POS may run at a time (two copies would fight over the local database).
 if (!app.requestSingleInstanceLock()) {
@@ -25,6 +26,7 @@ function createWindow() {
     backgroundColor: '#0b0f1a',
     icon: path.join(__dirname, '..', 'build', 'icon.png'),
     webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -71,6 +73,26 @@ app.on('second-instance', () => {
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.focus();
   }
+});
+
+// Direct receipt printing: only the main POS window may call these.
+function isFromMainWindow(event) {
+  return !!mainWindow && event.sender === mainWindow.webContents;
+}
+
+ipcMain.handle('printer:list', async (event) => {
+  if (!isFromMainWindow(event)) throw new Error('Not allowed');
+  const printers = await mainWindow.webContents.getPrintersAsync();
+  return printers.map((p) => ({ name: p.name, isDefault: !!p.isDefault }));
+});
+
+ipcMain.handle('printer:print', async (event, printerName, bytes) => {
+  if (!isFromMainWindow(event)) throw new Error('Not allowed');
+  const printers = await mainWindow.webContents.getPrintersAsync();
+  if (!printers.some((p) => p.name === printerName)) {
+    throw new Error(`Printer "${printerName}" is not installed`);
+  }
+  await printRaw(printerName, bytes);
 });
 
 app.whenReady().then(createWindow);
