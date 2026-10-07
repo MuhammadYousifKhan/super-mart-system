@@ -5,13 +5,31 @@ import { formatPKR } from '@/pages/Analytics';
 import { getOrderBreakdown, escapeHtml as esc } from '@/lib/orderMath';
 import { Button } from '@/components/ui/button';
 import { Printer, Share2 } from 'lucide-react';
+import { toast } from 'sonner';
+import {
+  getThermalPrinterConfig,
+  isThermalPrinterAvailable,
+  printReceiptDirect,
+} from '@/lib/thermalPrinter';
 
-// Standalone print function that can be called from anywhere
-export function printOrderReceipt(
-  order: Order,
-  items: OrderItemType[],
-  settings: { storeName: string; address: string; phone: string; taxRate: number; receiptFooterMessage: string }
-) {
+type ReceiptSettings = { storeName: string; address: string; phone: string; taxRate: number; receiptFooterMessage: string };
+
+// Standalone print function that can be called from anywhere.
+// In the desktop app with a thermal printer chosen in Settings, the receipt goes straight to that
+// printer as ESC/POS with no print dialog. Otherwise (browser, no printer chosen, or the printer
+// fails) it falls back to the browser print dialog so a sale can always be printed.
+export function printOrderReceipt(order: Order, items: OrderItemType[], settings: ReceiptSettings) {
+  if (isThermalPrinterAvailable() && getThermalPrinterConfig().printerName) {
+    printReceiptDirect(order, items, settings).catch((err) => {
+      toast.error(`Thermal printer error: ${err?.message || 'unknown'}. Opening the print dialog instead.`);
+      printHtmlReceipt(order, items, settings);
+    });
+    return;
+  }
+  printHtmlReceipt(order, items, settings);
+}
+
+function printHtmlReceipt(order: Order, items: OrderItemType[], settings: ReceiptSettings) {
   // Print from a hidden frame inside the POS window instead of a new window, so nothing is left
   // open for the cashier to close before serving the next customer.
   const frame = document.createElement('iframe');

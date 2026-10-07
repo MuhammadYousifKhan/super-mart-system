@@ -29,6 +29,7 @@ import {
   AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
 import { toast } from 'sonner';
+import { ThermalPrinterSettings } from '@/components/settings/ThermalPrinterSettings';
 import { useState, useRef, useEffect } from 'react';
 import type { UserCredentials } from '@/types/pos';
 import { Upload, X, Store, User, Lock, Building2, FileImage, Users, Plus, Trash2, Mail, Eye, EyeOff } from 'lucide-react';
@@ -394,6 +395,9 @@ export default function Settings() {
             </div>
           </CardContent>
         </Card>
+
+        {/* Thermal printer (this computer only) */}
+        <ThermalPrinterSettings storeName={form.storeName} />
 
         <Button onClick={handleSave} size="lg" className="w-full sm:w-auto">
           Save Store Settings
