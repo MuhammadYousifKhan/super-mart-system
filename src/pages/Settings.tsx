@@ -31,14 +31,16 @@ import {
 import { toast } from 'sonner';
 import { ThermalPrinterSettings } from '@/components/settings/ThermalPrinterSettings';
 import { useState, useRef, useEffect } from 'react';
-import type { UserCredentials } from '@/types/pos';
-import { Upload, X, Store, User, Lock, Building2, FileImage, Users, Plus, Trash2, Mail, Eye, EyeOff } from 'lucide-react';
+import type { UserCredentials, UserRole } from '@/types/pos';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Upload, X, Store, User, Lock, Building2, FileImage, Users, Plus, Trash2, Mail, Eye, EyeOff, KeyRound } from 'lucide-react';
 
 // Removed FIXED_CARD_FEE_PERCENT constant to rely on store settings
 
 export default function Settings() {
   const { settings, updateSettings } = useStore();
-  const { user, updateCredentials, getUsers, createUser, deleteUser, isAdmin } = useAuth();
+  const { user, updateCredentials, getUsers, createUser, deleteUser, setUserRole, setUserPassword, canChangeEmail, isAdmin } =
+    useAuth();
   const [form, setForm] = useState(settings);
   const [logoPreview, setLogoPreview] = useState<string | undefined>(settings.logo);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -58,16 +60,15 @@ export default function Settings() {
   }, [settings]);
 
   // Credential state
-  const currentUserCreds = getUsers().find(u => u.email === user?.email);
   const [credForm, setCredForm] = useState({
-    fullName: currentUserCreds?.fullName || '',
-    email: currentUserCreds?.email || '',
+    fullName: user?.fullName || '',
+    email: user?.email || '',
     currentPassword: '',
     newPassword: '',
     confirmPassword: '',
   });
 
-  // New cashier form state
+  // New user form state
   const [newCashierOpen, setNewCashierOpen] = useState(false);
   const [showNewPassword, setShowNewPassword] = useState(false);
   const [newCashierForm, setNewCashierForm] = useState({
@@ -75,7 +76,12 @@ export default function Settings() {
     email: '',
     password: '',
     confirmPassword: '',
+    role: 'cashier' as UserRole,
   });
+  const [userBusy, setUserBusy] = useState(false);
+  // Password reset for another user
+  const [passwordTarget, setPasswordTarget] = useState<{ email: string; fullName: string } | null>(null);
+  const [passwordForm, setPasswordForm] = useState({ password: '', confirmPassword: '' });
 
   const handleSave = () => {
     if (!form.storeName.trim()) {
@@ -116,7 +122,7 @@ export default function Settings() {
     }
   };
 
-  const handleCreateCashier = () => {
+  const handleCreateCashier = async () => {
     if (!newCashierForm.fullName.trim()) {
       toast.error('Please enter a full name');
       return;
@@ -138,43 +144,63 @@ export default function Settings() {
       return;
     }
 
-    const success = createUser({
-      fullName: newCashierForm.fullName,
-      email: newCashierForm.email,
+    setUserBusy(true);
+    const success = await createUser({
+      fullName: newCashierForm.fullName.trim(),
+      email: newCashierForm.email.trim(),
       password: newCashierForm.password,
-      role: 'cashier',
+      role: newCashierForm.role,
     });
+    setUserBusy(false);
 
     if (success) {
-      toast.success('Cashier account created successfully');
-      setNewCashierForm({ fullName: '', email: '', password: '', confirmPassword: '' });
+      toast.success(`${newCashierForm.role === 'admin' ? 'Admin' : 'Cashier'} account created. They can sign in on any PC.`);
+      setNewCashierForm({ fullName: '', email: '', password: '', confirmPassword: '', role: 'cashier' });
       setNewCashierOpen(false);
       setShowNewPassword(false);
-    } else {
-      toast.error('Email already exists');
     }
   };
 
-  const handleDeleteUser = (email: string) => {
-    const success = deleteUser(email);
+  const handleDeleteUser = async (email: string) => {
+    setUserBusy(true);
+    const success = await deleteUser(email);
+    setUserBusy(false);
+    if (success) toast.success('User deleted');
+  };
+
+  const handleRoleChange = async (email: string, role: UserRole) => {
+    setUserBusy(true);
+    const success = await setUserRole(email, role);
+    setUserBusy(false);
+    if (success) toast.success('Role updated. It applies the next time they sign in.');
+  };
+
+  const handleSetPassword = async () => {
+    if (!passwordTarget) return;
+    if (passwordForm.password.length < 6) {
+      toast.error('Password must be at least 6 characters');
+      return;
+    }
+    if (passwordForm.password !== passwordForm.confirmPassword) {
+      toast.error('Passwords do not match');
+      return;
+    }
+    setUserBusy(true);
+    const success = await setUserPassword(passwordTarget.email, passwordForm.password);
+    setUserBusy(false);
     if (success) {
-      toast.success('User deleted successfully');
-    } else {
-      toast.error('Cannot delete this user');
+      toast.success(`New password set for ${passwordTarget.fullName}`);
+      setPasswordTarget(null);
+      setPasswordForm({ password: '', confirmPassword: '' });
     }
   };
 
-  const handleCredentialsSave = () => {
+  const handleCredentialsSave = async () => {
     if (!user) return;
 
-    // Validate current password if changing password
     if (credForm.newPassword) {
       if (!credForm.currentPassword) {
         toast.error('Please enter your current password');
-        return;
-      }
-      if (currentUserCreds?.password !== credForm.currentPassword) {
-        toast.error('Current password is incorrect');
         return;
       }
       if (credForm.newPassword !== credForm.confirmPassword) {
@@ -188,11 +214,11 @@ export default function Settings() {
     }
 
     const updates: Partial<UserCredentials> = {};
-    if (credForm.fullName !== currentUserCreds?.fullName) {
-      updates.fullName = credForm.fullName;
+    if (credForm.fullName.trim() && credForm.fullName.trim() !== user.fullName) {
+      updates.fullName = credForm.fullName.trim();
     }
-    if (credForm.email !== currentUserCreds?.email) {
-      updates.email = credForm.email;
+    if (canChangeEmail && credForm.email.trim() && credForm.email.trim() !== user.email) {
+      updates.email = credForm.email.trim();
     }
     if (credForm.newPassword) {
       updates.password = credForm.newPassword;
@@ -203,12 +229,10 @@ export default function Settings() {
       return;
     }
 
-    const success = updateCredentials(user.email, updates);
+    const success = await updateCredentials(user.email, updates, credForm.currentPassword);
     if (success) {
       toast.success('Account updated successfully');
       setCredForm(prev => ({ ...prev, currentPassword: '', newPassword: '', confirmPassword: '' }));
-    } else {
-      toast.error('Failed to update account');
     }
   };
 
@@ -419,14 +443,14 @@ export default function Settings() {
                     <DialogTrigger asChild>
                       <Button size="sm">
                         <Plus className="h-4 w-4 mr-2" />
-                        Add Cashier
+                        Add User
                       </Button>
                     </DialogTrigger>
                     <DialogContent>
                       <DialogHeader>
-                        <DialogTitle>Create New Cashier Account</DialogTitle>
+                        <DialogTitle>Create New User</DialogTitle>
                         <DialogDescription>
-                          Add a new cashier to your POS system
+                          The account works on every PC. They sign in with this email and password.
                         </DialogDescription>
                       </DialogHeader>
                       <div className="space-y-4 py-4">
@@ -469,6 +493,21 @@ export default function Settings() {
                           </div>
                         </div>
                         <div className="space-y-2">
+                          <Label>Role</Label>
+                          <Select
+                            value={newCashierForm.role}
+                            onValueChange={(v) => setNewCashierForm({ ...newCashierForm, role: v as UserRole })}
+                          >
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="cashier">Cashier - POS, inventory, customers, suppliers</SelectItem>
+                              <SelectItem value="admin">Admin - everything, incl. reports and settings</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-2">
                           <Label htmlFor="newConfirmPassword">Confirm Password</Label>
                           <Input
                             id="newConfirmPassword"
@@ -483,14 +522,14 @@ export default function Settings() {
                         <Button variant="outline" onClick={() => setNewCashierOpen(false)}>
                           Cancel
                         </Button>
-                        <Button onClick={handleCreateCashier}>
-                          Create Account
+                        <Button onClick={handleCreateCashier} disabled={userBusy}>
+                          {userBusy ? 'Creating...' : 'Create Account'}
                         </Button>
                       </DialogFooter>
                     </DialogContent>
                   </Dialog>
                 </div>
-                <CardDescription>Manage cashier accounts for your store</CardDescription>
+                <CardDescription>Staff accounts for every PC. Adding or changing users needs internet.</CardDescription>
               </CardHeader>
               <CardContent>
                 <div className="space-y-3">
@@ -511,10 +550,39 @@ export default function Settings() {
                           </div>
                         </div>
                       </div>
-                      <div className="flex items-center gap-3">
-                        <Badge variant={u.role === 'admin' ? 'default' : 'secondary'}>
-                          {u.role}
-                        </Badge>
+                      <div className="flex items-center gap-2">
+                        {u.email === user?.email ? (
+                          <Badge variant={u.role === 'admin' ? 'default' : 'secondary'}>{u.role} (you)</Badge>
+                        ) : (
+                          <>
+                            <Select
+                              value={u.role}
+                              disabled={userBusy}
+                              onValueChange={(v) => void handleRoleChange(u.email, v as UserRole)}
+                            >
+                              <SelectTrigger className="h-8 w-28">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="cashier">Cashier</SelectItem>
+                                <SelectItem value="admin">Admin</SelectItem>
+                                {u.role === 'frontdesk' && <SelectItem value="frontdesk">Front desk</SelectItem>}
+                              </SelectContent>
+                            </Select>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              title="Set a new password"
+                              disabled={userBusy}
+                              onClick={() => {
+                                setPasswordForm({ password: '', confirmPassword: '' });
+                                setPasswordTarget({ email: u.email, fullName: u.fullName });
+                              }}
+                            >
+                              <KeyRound className="h-4 w-4" />
+                            </Button>
+                          </>
+                        )}
                         {u.email !== user?.email && (
                           <AlertDialog>
                             <AlertDialogTrigger asChild>
@@ -526,14 +594,15 @@ export default function Settings() {
                               <AlertDialogHeader>
                                 <AlertDialogTitle>Delete User</AlertDialogTitle>
                                 <AlertDialogDescription>
-                                  Are you sure you want to delete {u.fullName}'s account? This action cannot be undone.
+                                  Are you sure you want to delete {u.fullName}'s account? They will no longer be able to
+                                  sign in on any PC. Their past sales are kept. This cannot be undone.
                                 </AlertDialogDescription>
                               </AlertDialogHeader>
                               <AlertDialogFooter>
                                 <AlertDialogCancel>Cancel</AlertDialogCancel>
                                 <AlertDialogAction
                                   className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                                  onClick={() => handleDeleteUser(u.email)}
+                                  onClick={() => void handleDeleteUser(u.email)}
                                 >
                                   Delete
                                 </AlertDialogAction>
@@ -547,6 +616,46 @@ export default function Settings() {
                 </div>
               </CardContent>
             </Card>
+
+            <Dialog open={!!passwordTarget} onOpenChange={(open) => !open && setPasswordTarget(null)}>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Set New Password</DialogTitle>
+                  <DialogDescription>
+                    For {passwordTarget?.fullName} ({passwordTarget?.email}). Tell them the new password; the old one
+                    stops working.
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4 py-4">
+                  <div className="space-y-2">
+                    <Label>New Password</Label>
+                    <Input
+                      type="password"
+                      value={passwordForm.password}
+                      onChange={(e) => setPasswordForm({ ...passwordForm, password: e.target.value })}
+                      placeholder="Min 6 characters"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Confirm Password</Label>
+                    <Input
+                      type="password"
+                      value={passwordForm.confirmPassword}
+                      onChange={(e) => setPasswordForm({ ...passwordForm, confirmPassword: e.target.value })}
+                      placeholder="Confirm password"
+                    />
+                  </div>
+                </div>
+                <DialogFooter>
+                  <Button variant="outline" onClick={() => setPasswordTarget(null)}>
+                    Cancel
+                  </Button>
+                  <Button onClick={() => void handleSetPassword()} disabled={userBusy}>
+                    {userBusy ? 'Saving...' : 'Set Password'}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
           </>
         )}
 
@@ -578,6 +687,8 @@ export default function Settings() {
                   value={credForm.email}
                   onChange={(e) => setCredForm({ ...credForm, email: e.target.value })}
                   placeholder="Email address"
+                  disabled={!canChangeEmail}
+                  title={canChangeEmail ? undefined : 'The sign-in email cannot be changed. Create a new user instead.'}
                 />
               </div>
             </div>
@@ -632,7 +743,7 @@ export default function Settings() {
           </CardContent>
         </Card>
 
-        <Button onClick={handleCredentialsSave} variant="secondary" size="lg" className="w-full sm:w-auto">
+        <Button onClick={() => void handleCredentialsSave()} variant="secondary" size="lg" className="w-full sm:w-auto">
           Update Account
         </Button>
       </div>

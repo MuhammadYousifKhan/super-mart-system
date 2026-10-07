@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, ReactNode, useCallback } from 'react';
 import { User, UserRole, UserCredentials } from '@/types/pos';
-import type { User as SupabaseAuthUser } from '@supabase/supabase-js';
+import { createClient, type User as SupabaseAuthUser } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
 import { toast } from 'sonner';
 import { AuthContext } from './AuthContextValue';
@@ -11,11 +11,49 @@ export interface AuthContextType {
   login: (email: string, password: string) => Promise<boolean>;
   logout: () => void;
   isAdmin: boolean;
-  updateCredentials: (oldEmail: string, newCredentials: Partial<UserCredentials>) => boolean;
-  getUsers: () => UserCredentials[];
-  createUser: (credentials: Omit<UserCredentials, 'role'> & { role?: UserRole }) => boolean;
-  deleteUser: (email: string) => boolean;
+  /** Changes the signed-in user's own name, email (local mode only) or password. */
+  updateCredentials: (
+    oldEmail: string,
+    newCredentials: Partial<UserCredentials>,
+    currentPassword?: string
+  ) => Promise<boolean>;
+  getUsers: () => ManagedUser[];
+  createUser: (credentials: Omit<UserCredentials, 'role'> & { role?: UserRole }) => Promise<boolean>;
+  deleteUser: (email: string) => Promise<boolean>;
+  setUserRole: (email: string, role: UserRole) => Promise<boolean>;
+  setUserPassword: (email: string, password: string) => Promise<boolean>;
+  /** Email addresses can only be changed in local mode (in Supabase a change needs email confirmation). */
+  canChangeEmail: boolean;
   resetPassword: (email: string) => Promise<boolean>;
+}
+
+export interface ManagedUser extends UserCredentials {
+  /** Supabase auth user id (not set in local mode). */
+  id?: string;
+}
+
+// Staff accounts are created, deleted and changed by the "manage-users" Edge Function, which holds
+// the service-role key on the server and only acts for admins.
+async function callManageUsers(body: Record<string, unknown>): Promise<{ ok: boolean; error?: string }> {
+  const { error } = await supabase.functions.invoke('manage-users', { body });
+  if (!error) return { ok: true };
+
+  let message = error.message;
+  const response = (error as { context?: Response }).context;
+  if (response && typeof response.json === 'function') {
+    if (response.status === 404) {
+      return { ok: false, error: 'User management is not set up yet: deploy the "manage-users" Edge Function in Supabase.' };
+    }
+    try {
+      const detail = await response.json();
+      message = detail?.error || detail?.message || message;
+    } catch {
+      /* not JSON */
+    }
+  } else if (/failed to send|fetch|network|timed out|abort/i.test(message)) {
+    message = 'No connection to the server. Adding or changing users needs internet.';
+  }
+  return { ok: false, error: message };
 }
 
 // ============================================================
@@ -154,7 +192,7 @@ function resolveDisplayNameFromAuthUser(authUser: SupabaseAuthUser | null, fallb
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [dbUsers, setDbUsers] = useState<UserCredentials[]>([]);
+  const [dbUsers, setDbUsers] = useState<ManagedUser[]>([]);
   const hasLoggedProfileTimeout = useRef(false);
   const currentUserRef = useRef<User | null>(null);
 
@@ -168,10 +206,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const fetchAllUsers = useCallback(async () => {
     if (IS_LOCAL_MODE) return;
     try {
-      const { data } = await supabase.from('user_roles').select('email, role, full_name');
+      const { data } = await supabase.from('user_roles').select('user_id, email, role, full_name');
       if (data) {
         setDbUsers(
           data.map((d) => ({
+            id: d.user_id,
             email: d.email,
             password: '***',
             fullName: d.full_name,
@@ -553,27 +592,68 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // ----------------------------------------------------------
   // User management
   // ----------------------------------------------------------
-  const updateCredentials = (oldEmail: string, newCredentials: Partial<UserCredentials>): boolean => {
+  const findDbUser = (email: string) => dbUsers.find((u) => u.email.toLowerCase() === email.toLowerCase());
+
+  const updateCredentials = async (
+    oldEmail: string,
+    newCredentials: Partial<UserCredentials>,
+    currentPassword?: string
+  ): Promise<boolean> => {
     if (IS_LOCAL_MODE) {
       const users = getLocalUsers();
       const idx = users.findIndex(u => u.email.toLowerCase() === oldEmail.toLowerCase());
       if (idx === -1) { toast.error('User not found'); return false; }
+      if (newCredentials.password && users[idx].password !== currentPassword) {
+        toast.error('Current password is incorrect');
+        return false;
+      }
       users[idx] = { ...users[idx], ...newCredentials };
       saveLocalUsers(users);
       setDbUsers([...users]);
-      toast.success('Credentials updated (local mode)');
       return true;
     }
-    toast.error("Multi-user setup requires password resets to be handled via Supabase Dashboard or authenticated emails.");
-    return false;
+
+    if (newCredentials.email && newCredentials.email.toLowerCase() !== oldEmail.toLowerCase()) {
+      toast.error('Email addresses cannot be changed here. Create a new user instead.');
+      return false;
+    }
+
+    if (newCredentials.password) {
+      // Check the current password with a separate client, so this session is left untouched.
+      const checker = createClient(import.meta.env.VITE_SUPABASE_URL, import.meta.env.VITE_SUPABASE_ANON_KEY, {
+        auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+      });
+      const { error: checkError } = await checker.auth.signInWithPassword({ email: oldEmail, password: currentPassword || '' });
+      if (checkError) {
+        toast.error(/invalid/i.test(checkError.message) ? 'Current password is incorrect' : checkError.message);
+        return false;
+      }
+      void checker.auth.signOut({ scope: 'local' });
+      const { error } = await supabase.auth.updateUser({ password: newCredentials.password });
+      if (error) {
+        toast.error(error.message);
+        return false;
+      }
+    }
+
+    if (newCredentials.fullName !== undefined) {
+      const result = await callManageUsers({ action: 'update_own_name', fullName: newCredentials.fullName });
+      if (!result.ok) {
+        toast.error(result.error);
+        return false;
+      }
+      if (user) applyUser({ ...user, fullName: newCredentials.fullName });
+      await fetchAllUsers();
+    }
+    return true;
   };
 
-  const getUsers = (): UserCredentials[] => {
+  const getUsers = (): ManagedUser[] => {
     if (IS_LOCAL_MODE) return getLocalUsers();
     return dbUsers;
   };
 
-  const createUser = (credentials: Omit<UserCredentials, 'role'> & { role?: UserRole }): boolean => {
+  const createUser = async (credentials: Omit<UserCredentials, 'role'> & { role?: UserRole }): Promise<boolean> => {
     if (IS_LOCAL_MODE) {
       const users = getLocalUsers();
       if (users.find(u => u.email.toLowerCase() === credentials.email.toLowerCase())) {
@@ -589,24 +669,84 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       users.push(newUser);
       saveLocalUsers(users);
       setDbUsers([...users]);
-      toast.success('User created (local mode)');
       return true;
     }
-    toast.info("With real Authentication enabled, you must create edge workers or use the Supabase Dashboard to safely provision new user accounts without losing your current admin session.");
-    return false;
+    const result = await callManageUsers({
+      action: 'create',
+      email: credentials.email,
+      password: credentials.password,
+      fullName: credentials.fullName,
+      role: credentials.role || 'cashier',
+    });
+    if (!result.ok) {
+      toast.error(result.error);
+      return false;
+    }
+    await fetchAllUsers();
+    return true;
   };
 
-  const deleteUser = (email: string): boolean => {
+  const deleteUser = async (email: string): Promise<boolean> => {
     if (IS_LOCAL_MODE) {
       let users = getLocalUsers();
       users = users.filter(u => u.email.toLowerCase() !== email.toLowerCase());
       saveLocalUsers(users);
       setDbUsers([...users]);
-      toast.success('User deleted (local mode)');
       return true;
     }
-    toast.error("User deletion must be done from Supabase Auth Dashboard in production.");
-    return false;
+    const target = findDbUser(email);
+    if (!target?.id) {
+      toast.error('User not found');
+      return false;
+    }
+    const result = await callManageUsers({ action: 'delete', userId: target.id });
+    if (!result.ok) {
+      toast.error(result.error);
+      return false;
+    }
+    await fetchAllUsers();
+    return true;
+  };
+
+  const setUserRole = async (email: string, role: UserRole): Promise<boolean> => {
+    if (IS_LOCAL_MODE) {
+      const users = getLocalUsers().map(u => (u.email.toLowerCase() === email.toLowerCase() ? { ...u, role } : u));
+      saveLocalUsers(users);
+      setDbUsers([...users]);
+      return true;
+    }
+    const target = findDbUser(email);
+    if (!target?.id) {
+      toast.error('User not found');
+      return false;
+    }
+    const result = await callManageUsers({ action: 'set_role', userId: target.id, role });
+    if (!result.ok) {
+      toast.error(result.error);
+      return false;
+    }
+    await fetchAllUsers();
+    return true;
+  };
+
+  const setUserPassword = async (email: string, password: string): Promise<boolean> => {
+    if (IS_LOCAL_MODE) {
+      const users = getLocalUsers().map(u => (u.email.toLowerCase() === email.toLowerCase() ? { ...u, password } : u));
+      saveLocalUsers(users);
+      setDbUsers([...users]);
+      return true;
+    }
+    const target = findDbUser(email);
+    if (!target?.id) {
+      toast.error('User not found');
+      return false;
+    }
+    const result = await callManageUsers({ action: 'set_password', userId: target.id, password });
+    if (!result.ok) {
+      toast.error(result.error);
+      return false;
+    }
+    return true;
   };
 
   return (
@@ -621,6 +761,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         getUsers,
         createUser,
         deleteUser,
+        setUserRole,
+        setUserPassword,
+        canChangeEmail: IS_LOCAL_MODE,
         resetPassword,
       }}
     >
