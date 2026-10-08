@@ -156,8 +156,8 @@ export function ReceiveSupplierStockModal({
       const unitCost =
         item.unitCost.trim() === '' ? product.costPrice : Number(item.unitCost || 0);
 
-      if (!Number.isFinite(qty) || qty <= 0) {
-        toast.error('Each row must have quantity greater than 0');
+      if (!Number.isInteger(qty) || qty <= 0) {
+        toast.error('Each row must have a whole-number quantity of at least 1');
         return;
       }
 
@@ -184,7 +184,8 @@ export function ReceiveSupplierStockModal({
       return;
     }
 
-    receiveSupplierStockBatch({
+    // On a refusal the store shows why and the form stays filled in.
+    const saved = receiveSupplierStockBatch({
       supplierId: selectedSupplier.id,
       items: normalizedItems,
       paidAmount: parsedPaid,
@@ -192,8 +193,8 @@ export function ReceiveSupplierStockModal({
       invoiceNumber: invoiceNumber.trim() || undefined,
       note: note.trim() || undefined,
     });
+    if (!saved) return;
 
-    toast.success('Stock intake saved for all items and supplier balance updated');
     resetForm();
     onOpenChange(false);
   };

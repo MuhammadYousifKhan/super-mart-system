@@ -5,6 +5,10 @@
 -- "balance = 1500") lets one PC overwrite the other. Instead:
 --   * stock changes are recorded as movements ("sold 2") and applied by the database once each;
 --   * customer and supplier totals are kept up to date by the database from their ledgers.
+--
+-- Updating the app later: when it says the database needs an update, run this whole file again.
+-- It only adds what is missing. (Version 3 adds returns/exchanges and bill history, section 5;
+-- PCs still on the previous app version keep working with it.)
 
 -- ---------------------------------------------------------------------------
 -- 1. Stock movements
@@ -184,12 +188,51 @@ end;
 $$;
 
 -- ---------------------------------------------------------------------------
--- 5. Tells the app this database is ready for several PCs
+-- 5. Returns / exchanges and bill history (database version 3)
 -- ---------------------------------------------------------------------------
+-- A return or exchange is saved as its own bill, dated when the customer came back, and linked
+-- to the bill the goods came from. Returned goods are lines with a negative quantity.
+alter table public.orders add column if not exists original_order_id text references public.orders(id);
+create index if not exists idx_orders_original_order_id on public.orders(original_order_id);
+
+-- Who edited, cancelled or exchanged against a bill, when, why, and what it looked like before.
+create table if not exists public.order_edit_logs (
+  id text primary key,
+  order_id text not null,
+  edited_by text,
+  edited_at timestamp with time zone not null default now(),
+  changes_summary text,
+  previous_order jsonb,
+  previous_items jsonb
+);
+create index if not exists idx_order_edit_logs_order_id on public.order_edit_logs(order_id);
+
+alter table public.order_edit_logs enable row level security;
+drop policy if exists "Authenticated access to order_edit_logs" on public.order_edit_logs;
+create policy "Authenticated access to order_edit_logs" on public.order_edit_logs
+  for all to authenticated
+  using ((select auth.uid()) is not null) with check ((select auth.uid()) is not null);
+
+-- Live updates for bill history (the table did not exist yet when section 4 ran the first time).
+do $$
+begin
+  if exists (select 1 from pg_publication where pubname = 'supabase_realtime') and not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'order_edit_logs'
+  ) then
+    alter publication supabase_realtime add table public.order_edit_logs;
+  end if;
+end;
+$$;
+
+-- ---------------------------------------------------------------------------
+-- 6. Tells the app which features this database is ready for
+-- ---------------------------------------------------------------------------
+-- 2 = several PCs (sections 1-4), 3 = returns/exchanges and bill history (section 5).
 create or replace function public.pos_schema_version()
 returns integer
 language sql
 stable
-as $$ select 2 $$;
+as $$ select 3 $$;
 
 notify pgrst, 'reload schema';

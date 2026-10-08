@@ -48,6 +48,12 @@ npm install
     *   Open the file `SUPABASE_SETUP.sql` located in the root of this project.
     *   Copy the entire content of `SUPABASE_SETUP.sql` and paste it into the Supabase SQL Editor.
     *   Click **Run** to create the necessary tables and security policies.
+3.  **Run the multi-PC / feature update**: in a new query, run `MULTI_PC_SETUP.sql` the same way
+    (stock movements, ledger-based balances, live updates between PCs, returns/exchanges and bill
+    history). It is safe to run again.
+4.  **After updating the app**: if the sidebar says the database needs an update, run
+    `MULTI_PC_SETUP.sql` again. Until then, sales and other changes are kept on the PC and upload
+    once it has been run.
 
 ### 4. Environment Configuration
 

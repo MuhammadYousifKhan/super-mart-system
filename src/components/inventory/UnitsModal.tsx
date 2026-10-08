@@ -8,7 +8,6 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
   DialogFooter,
 } from '@/components/ui/dialog';
 import {
@@ -21,8 +20,15 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { toast } from 'sonner';
-import { Plus, Trash2 } from 'lucide-react';
+import { Edit, Plus, Trash2 } from 'lucide-react';
 import { Unit } from '@/types/pos';
 
 interface UnitsModalProps {
@@ -31,29 +37,65 @@ interface UnitsModalProps {
 }
 
 export function UnitsModal({ open, onOpenChange }: UnitsModalProps) {
-  const { units, addUnit, deleteUnit } = useStore();
+  const { units, products, addUnit, updateUnit, deleteUnit } = useStore();
   const [unitForm, setUnitForm] = useState({ name: '', description: '' });
+  const [editingUnit, setEditingUnit] = useState<Unit | null>(null);
   const [deleteUnitId, setDeleteUnitId] = useState<string | null>(null);
+  const [replacementUnitId, setReplacementUnitId] = useState('');
 
-  const handleAddUnit = async (e: React.FormEvent) => {
+  const unitName = (id: string) => units.find((u) => u.id === id)?.name || 'this unit';
+  const productCount = (id: string) => products.filter((p) => p.unitId === id).length;
+
+  const resetForm = () => {
+    setEditingUnit(null);
+    setUnitForm({ name: '', description: '' });
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!unitForm.name.trim()) {
       toast.error('Unit name is required');
       return;
     }
 
-    await addUnit({
-      name: unitForm.name.trim(),
-      description: unitForm.description.trim(),
-    });
-
-    toast.success('Unit added successfully');
-    setUnitForm({ name: '', description: '' });
+    const unit = { name: unitForm.name.trim(), description: unitForm.description.trim() };
+    if (editingUnit) {
+      if (!updateUnit(editingUnit.id, unit)) return;
+      toast.success('Unit updated successfully');
+    } else {
+      if (!addUnit(unit)) return;
+      toast.success('Unit added successfully');
+    }
+    resetForm();
   };
 
-  const handleDeleteUnit = async (unitId: string) => {
-    await deleteUnit(unitId);
-    toast.success('Unit deleted successfully');
+  const startEdit = (unit: Unit) => {
+    setEditingUnit(unit);
+    setUnitForm({ name: unit.name, description: unit.description || '' });
+  };
+
+  const openDelete = (unitId: string) => {
+    setReplacementUnitId('');
+    setDeleteUnitId(unitId);
+  };
+
+  // Products still using the unit are moved to the chosen one before it is deleted (the database
+  // refuses to delete a unit that products point at).
+  const deleteCount = deleteUnitId ? productCount(deleteUnitId) : 0;
+
+  const handleDeleteUnit = () => {
+    if (!deleteUnitId) return;
+    if (deleteCount > 0 && !replacementUnitId) {
+      toast.error('Choose a unit to move the products to');
+      return;
+    }
+    if (!deleteUnit(deleteUnitId, replacementUnitId || undefined)) return;
+    toast.success(
+      deleteCount > 0
+        ? `Unit deleted. ${deleteCount} product${deleteCount === 1 ? '' : 's'} moved to ${unitName(replacementUnitId)}.`
+        : 'Unit deleted successfully'
+    );
+    if (editingUnit?.id === deleteUnitId) resetForm();
     setDeleteUnitId(null);
   };
 
@@ -66,10 +108,10 @@ export function UnitsModal({ open, onOpenChange }: UnitsModalProps) {
           </DialogHeader>
 
           <div className="space-y-4">
-            {/* Add Unit Form */}
+            {/* Add / Edit Unit Form */}
             <div className="border rounded-lg p-4 bg-gray-50 dark:bg-slate-900">
-              <h3 className="font-medium mb-3">Add New Unit</h3>
-              <form onSubmit={handleAddUnit} className="space-y-3">
+              <h3 className="font-medium mb-3">{editingUnit ? `Edit Unit: ${editingUnit.name}` : 'Add New Unit'}</h3>
+              <form onSubmit={handleSubmit} className="space-y-3">
                 <div>
                   <Label htmlFor="unit-name">Unit Name *</Label>
                   <Input
@@ -92,10 +134,26 @@ export function UnitsModal({ open, onOpenChange }: UnitsModalProps) {
                     }
                   />
                 </div>
-                <Button type="submit" size="sm" className="w-full">
-                  <Plus className="w-4 h-4 mr-2" />
-                  Add Unit
-                </Button>
+                <div className="flex gap-2">
+                  <Button type="submit" size="sm" className="flex-1">
+                    {editingUnit ? (
+                      <>
+                        <Edit className="w-4 h-4 mr-2" />
+                        Update Unit
+                      </>
+                    ) : (
+                      <>
+                        <Plus className="w-4 h-4 mr-2" />
+                        Add Unit
+                      </>
+                    )}
+                  </Button>
+                  {editingUnit && (
+                    <Button type="button" size="sm" variant="outline" onClick={resetForm}>
+                      Cancel
+                    </Button>
+                  )}
+                </div>
               </form>
             </div>
 
@@ -111,7 +169,9 @@ export function UnitsModal({ open, onOpenChange }: UnitsModalProps) {
                   units.map((unit) => (
                     <div
                       key={unit.id}
-                      className="flex items-center justify-between p-2 border rounded bg-slate-50 dark:bg-slate-800"
+                      className={`flex items-center justify-between p-2 border rounded bg-slate-50 dark:bg-slate-800 ${
+                        editingUnit?.id === unit.id ? 'border-primary' : ''
+                      }`}
                     >
                       <div className="flex-1">
                         <p className="font-medium text-sm">{unit.name}</p>
@@ -121,10 +181,17 @@ export function UnitsModal({ open, onOpenChange }: UnitsModalProps) {
                           </p>
                         )}
                       </div>
+                      <span className="text-xs text-muted-foreground mr-2">
+                        {productCount(unit.id)} product{productCount(unit.id) === 1 ? '' : 's'}
+                      </span>
+                      <Button variant="ghost" size="sm" onClick={() => startEdit(unit)} title="Edit unit">
+                        <Edit className="w-4 h-4" />
+                      </Button>
                       <Button
                         variant="ghost"
                         size="sm"
-                        onClick={() => setDeleteUnitId(unit.id)}
+                        onClick={() => openDelete(unit.id)}
+                        title="Delete unit"
                         className="text-destructive hover:text-destructive hover:bg-destructive/10"
                       >
                         <Trash2 className="w-4 h-4" />
@@ -152,18 +219,41 @@ export function UnitsModal({ open, onOpenChange }: UnitsModalProps) {
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Unit</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete this unit? Products using this unit may be affected.
+              {deleteCount > 0
+                ? `${deleteCount} product${deleteCount === 1 ? '' : 's'} still use "${unitName(deleteUnitId || '')}". Choose a unit to move ${deleteCount === 1 ? 'it' : 'them'} to, then the unit is deleted.`
+                : `Are you sure you want to delete "${unitName(deleteUnitId || '')}"? This action cannot be undone.`}
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {deleteCount > 0 && (
+            <div className="space-y-2">
+              <Label>Move products to</Label>
+              <Select value={replacementUnitId} onValueChange={setReplacementUnitId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select unit" />
+                </SelectTrigger>
+                <SelectContent>
+                  {units
+                    .filter((u) => u.id !== deleteUnitId)
+                    .map((u) => (
+                      <SelectItem key={u.id} value={u.id}>
+                        {u.name}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+              {units.length < 2 && (
+                <p className="text-xs text-muted-foreground">Add another unit first, then move the products to it.</p>
+              )}
+            </div>
+          )}
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              onClick={() => {
-                if (deleteUnitId) handleDeleteUnit(deleteUnitId);
-              }}
+              onClick={handleDeleteUnit}
+              disabled={deleteCount > 0 && !replacementUnitId}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              Delete
+              {deleteCount > 0 ? 'Move Products & Delete' : 'Delete'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

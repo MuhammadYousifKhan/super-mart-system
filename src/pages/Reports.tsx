@@ -281,7 +281,16 @@ function SalesProfitTab({
     ['Cost of goods', money(report.cost)],
     ['Gross profit', `${money(report.profit)} (${report.margin}%)`],
     ['Bills', String(report.orders)],
+    // Returns are already inside the figures above; listed so the printout shows them.
+    ...(report.exchanges > 0
+      ? ([
+          ['Exchanges / returns', String(report.exchanges)],
+          ['Returns (before tax)', money(report.returnsNet)],
+        ] as [string, string][])
+      : []),
   ];
+  // Shown under each table so the reader knows returns are already counted.
+  const exchangeNote = report.exchanges > 0 ? ' Exchanges/returns are included on the day they happened but are not counted as bills.' : '';
 
   const viewSelect = (
     <Select value={view} onValueChange={(v) => setView(v as SalesView)}>
@@ -330,6 +339,13 @@ function SalesProfitTab({
           value={String(report.cancelledOrders)}
           hint={report.cancelledOrders ? money(report.cancelledAmount) : undefined}
         />
+        {report.exchanges > 0 && (
+          <StatCard
+            label="Returns (before tax)"
+            value={money(report.returnsNet)}
+            hint={`${report.exchanges} exchange(s) - ${report.returnedItems.toLocaleString()} item(s) back. Already taken off net sales.`}
+          />
+        )}
       </div>
 
       {(report.estimatedCostLines > 0 || report.missingCostLines > 0) && (
@@ -348,7 +364,7 @@ function SalesProfitTab({
         <ReportTable
           title={viewTitle.payment}
           subtitle={period}
-          description={`${period}. Amount billed including tax and card fees.`}
+          description={`${period}. Amount billed including tax and card fees, less money refunded on exchanges.${exchangeNote}`}
           columns={paymentColumns}
           rows={report.byPayment}
           rowKey={(r) => r.method}
@@ -361,7 +377,7 @@ function SalesProfitTab({
         <ReportTable
           title={viewTitle[view]}
           subtitle={period}
-          description={`${period}. Sales are after discounts and before tax.`}
+          description={`${period}. Sales are after discounts and returns, before tax.${exchangeNote}`}
           columns={profitColumns}
           rows={rows}
           rowKey={(r) => r.key}

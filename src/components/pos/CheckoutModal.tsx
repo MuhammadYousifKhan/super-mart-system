@@ -125,7 +125,7 @@ export function CheckoutModal({ open, onOpenChange, onComplete }: CheckoutModalP
       onComplete(order);
     } catch (error) {
       console.error('Checkout error:', error);
-      toast.error('Failed to complete checkout');
+      toast.error(error instanceof Error && error.message ? error.message : 'Failed to complete checkout');
     } finally {
       setIsSubmitting(false);
     }

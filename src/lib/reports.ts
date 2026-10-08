@@ -10,6 +10,10 @@ import type {
 } from '@/types/pos';
 import { getOrderBreakdown } from '@/lib/orderMath';
 import { parseLocalDate, toLocalISODate, todayLocal } from '@/lib/dates';
+import { isExchangeOrder } from '@/lib/exchange';
+import { isCreditReversal } from '@/lib/ledger';
+
+export { isCreditReversal };
 
 /** Inclusive range of local calendar days, as YYYY-MM-DD. */
 export interface DateRange {
@@ -53,25 +57,45 @@ export interface PaymentRow {
   amount: number;
 }
 
+/**
+ * Exchanges/returns (see Order.originalOrderId) are counted on the day they happened: their money,
+ * tax, cost and quantities go into every figure below (a refund lowers net sales, puts the cost
+ * back and takes the units off items sold), but they are not sale bills, so `orders`,
+ * `averageBill` and the "Bills" counts in the rows only count normal sales.
+ */
 export interface SalesProfitReport {
+  /** Sale bills, not counting exchanges/returns. */
   orders: number;
+  /** Units sold less units returned. */
   itemsSold: number;
-  /** Item prices x quantity, before discounts. */
+  /** Item prices x quantity, before discounts, less the price of goods returned. */
   grossSales: number;
+  /** Discounts given, less the discount that was on goods returned. */
   discounts: number;
-  /** Sales after discounts, before tax and card fees. Profit is measured against this. */
+  /** Sales after discounts and returns, before tax and card fees. Profit is measured against this. */
   netSales: number;
   tax: number;
   cardFees: number;
-  /** What customers were billed in total (net sales + tax + card fees). */
+  /** What customers were billed in total (net sales + tax + card fees), less money refunded on exchanges. */
   billed: number;
   cost: number;
   profit: number;
   margin: number;
+  /** Average sale bill (exchanges are left out). */
   averageBill: number;
+  /** Exchanges/returns in the period, not counting cancelled ones. */
+  exchanges: number;
+  /**
+   * What customers had paid for the goods they brought back in the period, before tax (after their
+   * discounts). Already taken off net sales; shown on its own so returns are visible.
+   */
+  returnsNet: number;
+  /** Units brought back on exchanges/returns. Already taken off itemsSold. */
+  returnedItems: number;
+  /** Cancelled sale bills. A cancelled exchange is simply ignored and not counted here. */
   cancelledOrders: number;
   cancelledAmount: number;
-  /** Credit given on account in the period (bills paid by credit). */
+  /** Credit given on account in the period (bills paid by credit), less exchange refunds put back on account. */
   creditSales: number;
   /** Money customers paid against their credit in the period. */
   creditRecovered: number;
@@ -89,13 +113,14 @@ export interface SalesProfitReport {
 
 type Acc = { label: string; orders: Set<string>; quantity: number; sales: number; cost: number };
 
-function addTo(map: Map<string, Acc>, key: string, label: string, orderId: string, qty: number, sales: number, cost: number) {
+/** `orderId` is null for an exchange, which adds its money and quantities but is not a bill. */
+function addTo(map: Map<string, Acc>, key: string, label: string, orderId: string | null, qty: number, sales: number, cost: number) {
   let acc = map.get(key);
   if (!acc) {
     acc = { label, orders: new Set(), quantity: 0, sales: 0, cost: 0 };
     map.set(key, acc);
   }
-  acc.orders.add(orderId);
+  if (orderId) acc.orders.add(orderId);
   acc.quantity += qty;
   acc.sales += sales;
   acc.cost += cost;
@@ -118,9 +143,6 @@ function toRows(map: Map<string, Acc>): ProfitRow[] {
     };
   });
 }
-
-export const isCreditReversal = (t: CustomerTransaction) =>
-  t.type === 'payment' && /^credit reversal/i.test(t.description || '');
 
 export function paymentLabel(order: Pick<Order, 'paymentMethod' | 'transferType'>): string {
   const method = order.paymentMethod.charAt(0).toUpperCase() + order.paymentMethod.slice(1);
@@ -153,6 +175,10 @@ export function buildSalesProfitReport(args: {
   const byPayment = new Map<string, PaymentRow>();
 
   let count = 0;
+  let saleBilled = 0;
+  let exchanges = 0;
+  let returnsNet = 0;
+  let returnedItems = 0;
   let itemsSold = 0;
   let grossSales = 0;
   let discounts = 0;
@@ -170,15 +196,25 @@ export function buildSalesProfitReport(args: {
   for (const order of orders) {
     const day = dayOf(order.createdAt);
     if (!inRange(day, range)) continue;
+    const exchange = isExchangeOrder(order);
     if (order.status === 'refunded') {
-      cancelledOrders += 1;
-      cancelledAmount += order.totalAmount;
+      // A cancelled exchange never happened as far as the figures go; it is not a cancelled bill.
+      if (!exchange) {
+        cancelledOrders += 1;
+        cancelledAmount += order.totalAmount;
+      }
       continue;
     }
 
     const items = itemsByOrder.get(order.id) || [];
     const breakdown = getOrderBreakdown(order, items);
-    count += 1;
+    // Bills are counted per sale; an exchange only moves money and goods.
+    const billId = exchange ? null : order.id;
+    if (exchange) exchanges += 1;
+    else {
+      count += 1;
+      saleBilled += order.totalAmount;
+    }
     grossSales += breakdown.subtotal;
     discounts += breakdown.discount;
     netSales += breakdown.taxable;
@@ -189,14 +225,16 @@ export function buildSalesProfitReport(args: {
 
     const payKey = paymentLabel(order);
     const pay = byPayment.get(payKey) || { method: payKey, orders: 0, amount: 0 };
-    pay.orders += 1;
+    if (!exchange) pay.orders += 1;
     pay.amount += order.totalAmount;
     byPayment.set(payKey, pay);
 
     // Spread the cart-wide discount over the lines, so per-product sales add up to net sales.
+    // An exchange has no cart-wide discount (every line already carries its full discount) and its
+    // lines can net to zero or less, so they are taken as they are.
     const lineNets = items.map((i) => i.unitPriceAtSale * i.quantity - i.discountAmount);
     const sumNets = lineNets.reduce((s, n) => s + n, 0);
-    const factor = sumNets > 0 ? breakdown.taxable / sumNets : 0;
+    const factor = exchange ? 1 : sumNets > 0 ? breakdown.taxable / sumNets : 0;
 
     let orderCost = 0;
     items.forEach((item, idx) => {
@@ -215,15 +253,19 @@ export function buildSalesProfitReport(args: {
       const lineSales = lineNets[idx] * factor;
       orderCost += lineCost;
       itemsSold += item.quantity;
+      if (exchange && item.quantity < 0) {
+        returnedItems -= item.quantity;
+        returnsNet -= lineSales;
+      }
 
-      addTo(byProduct, item.productId || item.productName, item.productName, order.id, item.quantity, lineSales, lineCost);
+      addTo(byProduct, item.productId || item.productName, item.productName, billId, item.quantity, lineSales, lineCost);
       const catId = product?.categoryId || '';
-      addTo(byCategory, catId || 'none', categoryName.get(catId) || 'Uncategorised', order.id, item.quantity, lineSales, lineCost);
+      addTo(byCategory, catId || 'none', categoryName.get(catId) || 'Uncategorised', billId, item.quantity, lineSales, lineCost);
     });
 
     cost += orderCost;
-    addTo(byDay, day, day, order.id, 0, breakdown.taxable, orderCost);
-    addTo(byCashier, order.cashierId || order.cashierName, order.cashierName || 'Unknown', order.id, 0, breakdown.taxable, orderCost);
+    addTo(byDay, day, day, billId, 0, breakdown.taxable, orderCost);
+    addTo(byCashier, order.cashierId || order.cashierName, order.cashierName || 'Unknown', billId, 0, breakdown.taxable, orderCost);
   }
 
   // Credit recovered: real customer payments, not reversals of cancelled credit bills.
@@ -256,7 +298,10 @@ export function buildSalesProfitReport(args: {
     cost,
     profit,
     margin: netSales > 0 ? round2((profit / netSales) * 100) : 0,
-    averageBill: count > 0 ? round2(billed / count) : 0,
+    averageBill: count > 0 ? round2(saleBilled / count) : 0,
+    exchanges,
+    returnsNet: round2(returnsNet),
+    returnedItems: round2(returnedItems),
     cancelledOrders,
     cancelledAmount: round2(cancelledAmount),
     creditSales: round2(creditSales),
@@ -570,7 +615,7 @@ export interface StockRow {
   expiryDate: string;
   daysToExpiry: number | null;
   expiry: ExpiryStatus;
-  /** Units sold in the last `slowDays` days. */
+  /** Units sold in the last `slowDays` days, less units returned in that time (never below 0). */
   soldRecently: number;
   lastSoldDate: string;
 }
@@ -601,12 +646,14 @@ export function buildStockReport(args: {
   const orderDay = new Map<string, string>();
   for (const o of orders) if (o.status !== 'refunded') orderDay.set(o.id, dayOf(o.createdAt));
 
+  // Units sold per product in the window, less units returned in it (returned lines have a
+  // negative quantity). Goods coming back are not a sale, so they never set "last sold".
   const recent = new Map<string, number>();
   const lastSold = new Map<string, string>();
   for (const item of orderItems) {
     const day = orderDay.get(item.orderId);
     if (!day) continue;
-    if (day > (lastSold.get(item.productId) || '')) lastSold.set(item.productId, day);
+    if (item.quantity > 0 && day > (lastSold.get(item.productId) || '')) lastSold.set(item.productId, day);
     if (daysBetween(day, today) < slowDays) recent.set(item.productId, (recent.get(item.productId) || 0) + item.quantity);
   }
 
@@ -624,7 +671,8 @@ export function buildStockReport(args: {
     const daysToExpiry = p.expiryDate ? daysBetween(today, dayOf(p.expiryDate)) : null;
     const expiry: ExpiryStatus =
       daysToExpiry === null || units === 0 ? null : daysToExpiry < 0 ? 'expired' : daysToExpiry <= expiryDays ? 'expiring' : null;
-    const soldRecently = recent.get(p.id) || 0;
+    // A return of something sold before the window can leave the net below zero: that is still "not sold".
+    const soldRecently = Math.max(round2(recent.get(p.id) || 0), 0);
 
     costValue += units * p.costPrice;
     retailValue += units * p.sellingPrice;

@@ -44,6 +44,13 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Plus, Trash2, Search, ArrowUpDown, Package, FolderOpen, Edit, X } from 'lucide-react';
 import { ProductForm } from '@/components/inventory/ProductForm';
 import { QuickAddModal } from '@/components/inventory/QuickAddModal';
@@ -54,7 +61,8 @@ import { cn } from '@/lib/utils';
 import { formatPKR } from '@/pages/Analytics';
 
 export default function Inventory() {
-  const { products, units, categories, suppliers, deleteProducts, addCategory, updateCategory, deleteCategory } = useStore();
+  const { products, units, categories, suppliers, cart, heldCarts, deleteProducts, addCategory, updateCategory, deleteCategory } =
+    useStore();
   const [sorting, setSorting] = useState<SortingState>([]);
   const [globalFilter, setGlobalFilter] = useState('');
   const [rowSelection, setRowSelection] = useState<RowSelectionState>({});
@@ -69,6 +77,8 @@ export default function Inventory() {
   const [editingCategory, setEditingCategory] = useState<Category | null>(null);
   const [categoryForm, setCategoryForm] = useState({ name: '', description: '' });
   const [deleteCategoryId, setDeleteCategoryId] = useState<string | null>(null);
+  const [replacementCategoryId, setReplacementCategoryId] = useState('');
+  const [bulkDeleteIds, setBulkDeleteIds] = useState<string[] | null>(null);
 
   const getCategoryName = (categoryId: string) => {
     return categories.find((c) => c.id === categoryId)?.name || 'Unknown';
@@ -288,13 +298,23 @@ export default function Inventory() {
       .getFilteredSelectedRowModel()
       .rows.map((row) => row.original.id);
     if (selectedIds.length === 0) return;
-    if (!window.confirm(`Delete ${selectedIds.length} product${selectedIds.length === 1 ? '' : 's'}? This cannot be undone.`)) {
-      return;
-    }
-    deleteProducts(selectedIds);
-    setRowSelection({});
-    toast.success(`Deleted ${selectedIds.length} products`);
+    setBulkDeleteIds(selectedIds);
   };
+
+  const confirmBulkDelete = () => {
+    if (!bulkDeleteIds) return;
+    deleteProducts(bulkDeleteIds);
+    setRowSelection({});
+    toast.success(`Deleted ${bulkDeleteIds.length} product${bulkDeleteIds.length === 1 ? '' : 's'}`);
+    setBulkDeleteIds(null);
+  };
+
+  // What the bulk delete confirmation mentions: stock still on hand and products waiting in a sale.
+  const bulkDeleteSet = new Set(bulkDeleteIds || []);
+  const bulkDeleteWithStock = products.filter((p) => bulkDeleteSet.has(p.id) && p.stockQuantity > 0).length;
+  const bulkDeleteInSale =
+    cart.some((item) => bulkDeleteSet.has(item.product.id)) ||
+    heldCarts.some((held) => held.items.some((item) => bulkDeleteSet.has(item.product.id)));
 
   // Category handlers
   const handleAddCategory = () => {
@@ -302,10 +322,11 @@ export default function Inventory() {
       toast.error('Category name is required');
       return;
     }
-    addCategory({
+    const saved = addCategory({
       name: categoryForm.name.trim(),
       description: categoryForm.description.trim(),
     });
+    if (!saved) return;
     toast.success('Category added successfully');
     setCategoryForm({ name: '', description: '' });
   };
@@ -316,25 +337,38 @@ export default function Inventory() {
       toast.error('Category name is required');
       return;
     }
-    updateCategory(editingCategory.id, {
+    const saved = updateCategory(editingCategory.id, {
       name: categoryForm.name.trim(),
       description: categoryForm.description.trim(),
     });
+    if (!saved) return;
     toast.success('Category updated successfully');
     setEditingCategory(null);
     setCategoryForm({ name: '', description: '' });
   };
 
+  // Products still in a category are moved to the chosen one before it is deleted (the database
+  // refuses to delete a category that products point at).
+  const deleteCategoryProductCount = deleteCategoryId ? products.filter((p) => p.categoryId === deleteCategoryId).length : 0;
+
+  const openDeleteCategory = (categoryId: string) => {
+    setReplacementCategoryId('');
+    setDeleteCategoryId(categoryId);
+  };
+
   const handleDeleteCategory = () => {
     if (!deleteCategoryId) return;
-    const productsInCategory = products.filter(p => p.categoryId === deleteCategoryId);
-    if (productsInCategory.length > 0) {
-      toast.error(`Cannot delete category with ${productsInCategory.length} products. Move or delete the products first.`);
-      setDeleteCategoryId(null);
+    if (deleteCategoryProductCount > 0 && !replacementCategoryId) {
+      toast.error('Choose a category to move the products to');
       return;
     }
-    deleteCategory(deleteCategoryId);
-    toast.success('Category deleted successfully');
+    if (!deleteCategory(deleteCategoryId, replacementCategoryId || undefined)) return;
+    toast.success(
+      deleteCategoryProductCount > 0
+        ? `Category deleted. ${deleteCategoryProductCount} product${deleteCategoryProductCount === 1 ? '' : 's'} moved to ${getCategoryName(replacementCategoryId)}.`
+        : 'Category deleted successfully'
+    );
+    if (editingCategory?.id === deleteCategoryId) cancelEditCategory();
     setDeleteCategoryId(null);
   };
 
@@ -605,9 +639,8 @@ export default function Inventory() {
                             <Button
                               variant="ghost"
                               size="icon"
-                              onClick={() => setDeleteCategoryId(category.id)}
-                              disabled={productCount > 0}
-                              title={productCount > 0 ? 'Cannot delete category with products' : 'Delete category'}
+                              onClick={() => openDeleteCategory(category.id)}
+                              title="Delete category"
                             >
                               <Trash2 className="w-4 h-4 text-destructive" />
                             </Button>
@@ -624,17 +657,78 @@ export default function Inventory() {
       </Dialog>
 
       {/* Delete Category Confirmation */}
-      <AlertDialog open={!!deleteCategoryId} onOpenChange={() => setDeleteCategoryId(null)}>
+      <AlertDialog open={!!deleteCategoryId} onOpenChange={(open) => !open && setDeleteCategoryId(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Category</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete this category? This action cannot be undone.
+              {deleteCategoryProductCount > 0
+                ? `${deleteCategoryProductCount} product${deleteCategoryProductCount === 1 ? '' : 's'} still use "${getCategoryName(deleteCategoryId || '')}". Choose a category to move ${deleteCategoryProductCount === 1 ? 'it' : 'them'} to, then the category is deleted.`
+                : `Are you sure you want to delete "${getCategoryName(deleteCategoryId || '')}"? This action cannot be undone.`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {deleteCategoryProductCount > 0 && (
+            <div className="space-y-2">
+              <Label>Move products to</Label>
+              <Select value={replacementCategoryId} onValueChange={setReplacementCategoryId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select category" />
+                </SelectTrigger>
+                <SelectContent>
+                  {categories
+                    .filter((c) => c.id !== deleteCategoryId)
+                    .map((c) => (
+                      <SelectItem key={c.id} value={c.id}>
+                        {c.name}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+              {categories.length < 2 && (
+                <p className="text-xs text-muted-foreground">Add another category first, then move the products to it.</p>
+              )}
+            </div>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteCategory}
+              disabled={deleteCategoryProductCount > 0 && !replacementCategoryId}
+              className="bg-destructive hover:bg-destructive/90"
+            >
+              {deleteCategoryProductCount > 0 ? 'Move Products & Delete' : 'Delete'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Bulk delete confirmation */}
+      <AlertDialog open={!!bulkDeleteIds} onOpenChange={(open) => !open && setBulkDeleteIds(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Delete {bulkDeleteIds?.length ?? 0} product{bulkDeleteIds?.length === 1 ? '' : 's'}?
+            </AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2">
+                <p>
+                  Sales history is kept: past bills and reports still show the product name and SKU.
+                </p>
+                {bulkDeleteWithStock > 0 && (
+                  <p className="text-amber-600">
+                    {bulkDeleteWithStock} of them still {bulkDeleteWithStock === 1 ? 'has' : 'have'} stock on hand.
+                  </p>
+                )}
+                {bulkDeleteInSale && (
+                  <p className="text-amber-600">Some are in the open sale or a held bill and will be removed from it.</p>
+                )}
+                <p>This action cannot be undone.</p>
+              </div>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleDeleteCategory} className="bg-destructive hover:bg-destructive/90">
+            <AlertDialogAction onClick={confirmBulkDelete} className="bg-destructive hover:bg-destructive/90">
               Delete
             </AlertDialogAction>
           </AlertDialogFooter>

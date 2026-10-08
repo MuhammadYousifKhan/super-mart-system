@@ -1,6 +1,7 @@
 import { format } from 'date-fns';
 import type { Order, OrderItem } from '@/types/pos';
-import { getOrderBreakdown } from '@/lib/orderMath';
+import { getExchangeBreakdown, getOrderBreakdown } from '@/lib/orderMath';
+import { billNumber } from '@/lib/exchange';
 
 export type PaperColumns = 32 | 42 | 48;
 
@@ -150,6 +151,9 @@ class EscPosBuilder {
   }
 }
 
+/** Negative amounts print as "-PKR 1,000" (not "PKR -1,000"), like discounts. */
+const signedMoney = (amount: number) => (amount < 0 ? `-${formatMoney(-amount)}` : formatMoney(amount));
+
 export function buildReceiptBytes(
   order: Order,
   items: OrderItem[],
@@ -171,7 +175,12 @@ export function buildReceiptBytes(
   if (settings.address) b.wrapped(settings.address);
   if (settings.phone) b.line(`Tel: ${settings.phone}`);
   b.rule('=');
-  b.bold(true).line('INVOICE').line(`#${order.id.slice(-8).toUpperCase()}`).bold(false);
+  if (breakdown.isExchange) {
+    b.bold(true).line('EXCHANGE / RETURN').line(`#${billNumber(order.id)}`).bold(false);
+    b.line(`Against bill #${billNumber(order.originalOrderId || '')}`);
+  } else {
+    b.bold(true).line('INVOICE').line(`#${order.id.slice(-8).toUpperCase()}`).bold(false);
+  }
   b.align('left').rule('-');
 
   // Order info
@@ -181,6 +190,27 @@ export function buildReceiptBytes(
   if (order.clientName) b.row('Customer:', order.clientName);
   if (order.clientPhone) b.row('Phone:', order.clientPhone);
   b.rule('-');
+
+  if (breakdown.isExchange) {
+    printExchangeBody(b, order, items);
+  } else {
+    printSaleBody(b, order, items, breakdown);
+  }
+
+  // Footer
+  b.rule('-').align('center');
+  if (settings.receiptFooterMessage) b.bold(true).wrapped(settings.receiptFooterMessage).bold(false);
+  b.line(`Generated: ${format(new Date(), 'dd MMM yyyy hh:mm a')}`);
+  b.rule('-');
+  b.bold(true).line('Team Axioms').bold(false).line('Contact: 03367544180');
+
+  b.align('left').feed(3).cut();
+  return b.build();
+}
+
+/** Items, totals and payment of a normal sale. */
+function printSaleBody(b: EscPosBuilder, order: Order, items: OrderItem[], breakdown: ReturnType<typeof getOrderBreakdown>) {
+  const cols = b.cols;
 
   // Items
   b.bold(true).line('ITEMS').bold(false).rule('-');
@@ -221,16 +251,65 @@ export function buildReceiptBytes(
   if (order.status === 'credit') {
     b.rule('-').align('center').bold(true).line('*** CREDIT SALE ***').line('PAYMENT PENDING').bold(false).align('left');
   }
+}
 
-  // Footer
-  b.rule('-').align('center');
-  if (settings.receiptFooterMessage) b.bold(true).wrapped(settings.receiptFooterMessage).bold(false);
-  b.line(`Generated: ${format(new Date(), 'dd MMM yyyy hh:mm a')}`);
-  b.rule('-');
-  b.bold(true).line('Team Axioms').bold(false).line('Contact: 03367544180');
+/**
+ * Items, totals and settlement of an exchange/return: the goods that came back (quantities shown
+ * as positive, amounts as negative), the new goods, the tax line and what changed hands.
+ */
+function printExchangeBody(b: EscPosBuilder, order: Order, items: OrderItem[]) {
+  const ex = getExchangeBreakdown(order, items);
 
-  b.align('left').feed(3).cut();
-  return b.build();
+  if (ex.returned.length > 0) {
+    b.bold(true).line('RETURNED').bold(false).rule('-');
+    ex.returned.forEach((l, i) => {
+      b.bold(true).wrapped(`${i + 1}. ${l.item.productName}`).bold(false);
+      b.row(`   ${l.quantity} x ${formatMoney(l.item.unitPriceAtSale)}`, `-${formatMoney(l.gross)}`);
+      // The discount they had on these goods isn't refunded.
+      if (l.discount > 0.005) b.row('   Less discount', `+${formatMoney(l.discount)}`);
+    });
+    b.rule('-');
+  }
+
+  if (ex.added.length > 0) {
+    b.bold(true).line('NEW ITEMS').bold(false).rule('-');
+    ex.added.forEach((l, i) => {
+      b.bold(true).wrapped(`${i + 1}. ${l.item.productName}`).bold(false);
+      b.row(`   ${l.quantity} x ${formatMoney(l.item.unitPriceAtSale)}`, formatMoney(l.gross));
+      if (l.discount > 0.005) b.row('   Item discount', `-${formatMoney(l.discount)}`);
+    });
+    b.rule('-');
+  }
+
+  // Totals
+  b.row('Returned:', `-${formatMoney(ex.returnedNet)}`);
+  if (ex.added.length > 0) b.row('New items:', formatMoney(ex.newNet));
+  b.row('Tax:', signedMoney(ex.tax));
+  if (ex.cardFee > 0) b.row(`Card Fee (${order.cardFeeRate ?? 0}%):`, formatMoney(ex.cardFee));
+  b.rule('=');
+  b.bold(true);
+  const label = ex.settlement === 'Even exchange' ? 'EVEN EXCHANGE' : `${ex.settlement.toUpperCase()}:`;
+  const value = ex.settlement === 'Even exchange' ? '' : formatMoney(ex.settlementAmount);
+  const half = Math.floor(b.cols / 2);
+  if (b.cols >= 42 && label.length + 1 + value.length <= half) {
+    // Double size halves the column count, so build the row for cols / 2.
+    const gap = value ? Math.max(half - label.length - value.length, 1) : 0;
+    b.size(2).line(label + ' '.repeat(gap) + value).size(1);
+  } else {
+    b.row(label, value);
+  }
+  b.bold(false).rule('=');
+
+  // How the difference was settled
+  if (ex.settledVia) b.row(`${ex.settledVia.label}:`, ex.settledVia.method.toUpperCase());
+  if (order.transactionId) b.row('TID:', order.transactionId);
+  if (order.paymentMethod === 'cash' && order.amountTendered) {
+    b.row('Cash:', formatMoney(order.amountTendered));
+    b.row('Change:', formatMoney(order.changeGiven || 0));
+  }
+  if (order.status === 'credit') {
+    b.rule('-').align('center').bold(true).line('*** ADDED TO ACCOUNT ***').line('PAYMENT PENDING').bold(false).align('left');
+  }
 }
 
 /** A short page used to check the connection, the paper width and the cutter. */
