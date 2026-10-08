@@ -1,4 +1,4 @@
-import { todayLocal, nextDueDate } from '@/lib/dates';
+import { todayLocal, nextDueDate, isValidLocalDate, toLocalISODate } from '@/lib/dates';
 import React, { useState, useEffect, useRef, useCallback, ReactNode, type Dispatch, type SetStateAction } from 'react';
 import {
   Product,
@@ -30,6 +30,7 @@ import {
   mapCustomerReminder,
   mapCustomerTransaction,
   mapOrder,
+  mapOrderEditLog,
   mapOrderItem,
   mapProduct,
   mapSettings,
@@ -39,8 +40,30 @@ import {
   type CloudSnapshot,
 } from '@/lib/cloudSnapshot';
 import { toast } from 'sonner';
+import {
+  applyCustomerLedger,
+  applySupplierLedger,
+  customerPaymentCharges,
+  customerTxEffect,
+  editedCustomerTransaction,
+  editedSupplierPurchase,
+  isCreditReversal,
+  isValidAmount,
+} from '@/lib/ledger';
 import { db, saveArrayToDexie, loadArrayFromDexie, saveSettingsToDexie, loadSettingsFromDexie } from '@/db/db';
 import { computeEditedOrderTotals } from '@/lib/orderMath';
+import {
+  billNumber,
+  cancelBlockReason,
+  computeExchange,
+  describeExchange,
+  editBlockReason,
+  exchangeBlockReason,
+  getReturnableLines,
+  isExchangeOrder,
+  type ExchangeNewItem,
+  type ExchangeReturn,
+} from '@/lib/exchange';
 
 interface CreateOrderOptions {
   items: CartItem[];
@@ -55,27 +78,53 @@ interface CreateOrderOptions {
   customerId?: string;
 }
 
+/** How the difference on an exchange is settled. */
+export interface ExchangeSettlement {
+  /** credit = the customer's account (Digi Khata). */
+  paymentMethod: PaymentMethod;
+  /** Cash handed over when the customer pays the difference. */
+  amountTendered?: number;
+  customerId?: string;
+  transferType?: TransferType;
+  transactionId?: string;
+}
+
+/** A line on a bill being edited. */
+export interface BillEditLine {
+  /** The bill line this came from, if any (lines of deleted products have no product to match on). */
+  sourceItemId?: string;
+  productId: string;
+  productName: string;
+  productSku: string;
+  quantity: number;
+  unitPrice: number;
+  /** Discount on the whole line. */
+  discountAmount: number;
+}
+
 export interface StoreContextType {
-  // Products
+  // Products (the functions returning boolean say whether the change was made; refusals are shown as a toast)
   products: Product[];
-  addProduct: (product: Omit<Product, 'id'>) => void;
-  updateProduct: (id: string, product: Partial<Product>) => void;
+  addProduct: (product: Omit<Product, 'id'>) => boolean;
+  updateProduct: (id: string, product: Partial<Product>) => boolean;
   deleteProducts: (ids: string[]) => void;
   adjustProductStock: (productId: string, delta: number, reason?: string, orderId?: string) => Promise<void>;
   getProductBySku: (sku: string) => Product | undefined;
 
   // Units
   units: Unit[];
-  addUnit: (unit: Omit<Unit, 'id'>) => void;
-  updateUnit: (id: string, unit: Partial<Unit>) => void;
-  deleteUnit: (id: string) => void;
+  addUnit: (unit: Omit<Unit, 'id'>) => boolean;
+  updateUnit: (id: string, unit: Partial<Unit>) => boolean;
+  /** Products still using the unit are moved to `replacementId` first; refused when some use it and none is given. */
+  deleteUnit: (id: string, replacementId?: string) => boolean;
   getUnitById: (id: string) => Unit | undefined;
 
   // Categories
   categories: Category[];
-  addCategory: (category: Omit<Category, 'id'>) => void;
-  updateCategory: (id: string, category: Partial<Category>) => void;
-  deleteCategory: (id: string) => void;
+  addCategory: (category: Omit<Category, 'id'>) => boolean;
+  updateCategory: (id: string, category: Partial<Category>) => boolean;
+  /** Products still in the category are moved to `replacementId` first; refused when some are and none is given. */
+  deleteCategory: (id: string, replacementId?: string) => boolean;
 
   // Customers (Digi Khata)
   customers: Customer[];
@@ -85,12 +134,17 @@ export interface StoreContextType {
   updateCustomer: (id: string, customer: Partial<Customer>) => void;
   deleteCustomer: (id: string) => void;
   getCustomerById: (id: string) => Customer | undefined;
-  addCustomerPayment: (customerId: string, amount: number, description: string, paymentMethod: 'cash' | 'card') => void;
-  updateCustomerTransaction: (id: string, updates: { amount?: number; description?: string }) => void;
-  deleteCustomerTransaction: (id: string) => void;
+  addCustomerPayment: (customerId: string, amount: number, description: string, paymentMethod: 'cash' | 'card') => boolean;
+  /** `date` is YYYY-MM-DD; the entry keeps its time of day. Bill entries only allow the description to change. */
+  updateCustomerTransaction: (
+    id: string,
+    updates: { amount?: number; description?: string; paymentMethod?: 'cash' | 'card'; date?: string }
+  ) => boolean;
+  /** Refused for entries that belong to a bill. */
+  deleteCustomerTransaction: (id: string) => boolean;
   getCustomerTransactions: (customerId: string) => CustomerTransaction[];
-  addCustomerReminder: (customerId: string, frequency: ReminderFrequency, nextReminderDate: string, note?: string) => void;
-  updateCustomerReminder: (id: string, updates: Partial<CustomerReminder>) => void;
+  addCustomerReminder: (customerId: string, frequency: ReminderFrequency, nextReminderDate: string, note?: string) => boolean;
+  updateCustomerReminder: (id: string, updates: Partial<CustomerReminder>) => boolean;
   deleteCustomerReminder: (id: string) => void;
   getCustomerReminders: (customerId: string) => CustomerReminder[];
   getDueCustomerReminders: () => CustomerReminder[];
@@ -104,7 +158,8 @@ export interface StoreContextType {
   updateSupplier: (id: string, updates: Partial<Supplier>) => void;
   deleteSupplier: (id: string) => void;
   getSupplierById: (id: string) => Supplier | undefined;
-  addSupplierPurchase: (purchase: Omit<SupplierPurchase, 'id' | 'createdAt'>) => void;
+  /** `amount` is negative for a payment to the supplier. */
+  addSupplierPurchase: (purchase: Omit<SupplierPurchase, 'id' | 'createdAt'>) => boolean;
   receiveSupplierStock: (input: {
     productId: string;
     supplierId: string;
@@ -114,7 +169,7 @@ export interface StoreContextType {
     purchaseDate?: string;
     invoiceNumber?: string;
     note?: string;
-  }) => void;
+  }) => boolean;
   receiveSupplierStockBatch: (input: {
     supplierId: string;
     items: Array<{
@@ -128,16 +183,20 @@ export interface StoreContextType {
     purchaseDate?: string;
     invoiceNumber?: string;
     note?: string;
-  }) => void;
+  }) => boolean;
   getSupplierPurchases: (supplierId: string) => SupplierPurchase[];
-  updateSupplierPurchase: (id: string, updates: { amount?: number; description?: string }) => void;
-  deleteSupplierPurchase: (id: string) => void;
-  addSupplierPaymentSchedule: (schedule: Omit<SupplierPaymentSchedule, 'id' | 'createdAt' | 'isActive' | 'lastPaidAt'>) => void;
-  updateSupplierPaymentSchedule: (id: string, updates: Partial<SupplierPaymentSchedule>) => void;
+  /** `amount` is signed (negative = payment); `purchaseDate` is YYYY-MM-DD; an empty invoice number clears it. */
+  updateSupplierPurchase: (
+    id: string,
+    updates: { amount?: number; description?: string; purchaseDate?: string; invoiceNumber?: string }
+  ) => boolean;
+  deleteSupplierPurchase: (id: string) => boolean;
+  addSupplierPaymentSchedule: (schedule: Omit<SupplierPaymentSchedule, 'id' | 'createdAt' | 'isActive' | 'lastPaidAt'>) => boolean;
+  updateSupplierPaymentSchedule: (id: string, updates: Partial<SupplierPaymentSchedule>) => boolean;
   deleteSupplierPaymentSchedule: (id: string) => void;
   getSupplierPaymentSchedules: (supplierId: string) => SupplierPaymentSchedule[];
   getDueSupplierPaymentSchedules: () => SupplierPaymentSchedule[];
-  markSupplierSchedulePaid: (id: string) => void;
+  markSupplierSchedulePaid: (id: string) => boolean;
 
   // Orders
   orders: Order[];
@@ -145,8 +204,20 @@ export interface StoreContextType {
   orderEditLogs: OrderEditLog[];
   createOrder: (options: CreateOrderOptions) => Promise<Order>;
   updateOrder: (id: string, updates: Partial<Order>) => Promise<void>;
-  updateOrderFull: (id: string, newItems: Array<{ productId: string; productName: string; productSku: string; quantity: number; unitPrice: number; discountAmount: number }>, orderUpdates: Partial<Order>) => Promise<void>;
-  cancelOrder: (id: string) => Promise<void>;
+  /** Saves an edited bill. `orderUpdates.customerId` present but empty removes the customer. Resolves false if refused. */
+  updateOrderFull: (id: string, newItems: BillEditLine[], orderUpdates: Partial<Order>) => Promise<boolean>;
+  /** Cancels a bill or an exchange and puts everything back. Resolves false if refused. */
+  cancelOrder: (id: string, reason?: string) => Promise<boolean>;
+  /**
+   * Records a return/exchange against a bill as a new order (see Order.originalOrderId).
+   * Throws an Error with a message for the cashier when it can't be done.
+   */
+  createExchange: (
+    originalOrderId: string,
+    returns: Array<{ itemId: string; quantity: number }>,
+    newItems: Array<{ productId: string; quantity: number; unitPrice: number; discountAmount: number }>,
+    settlement: ExchangeSettlement
+  ) => Promise<Order>;
   getOrderItems: (orderId: string) => OrderItem[];
   getOrderEditLogs: (orderId: string) => OrderEditLog[];
   getCustomerOrders: (customerId: string) => Order[];
@@ -315,6 +386,59 @@ const isMissingCostColumnError = (error: { message?: string } | null | undefined
 const withoutCostColumn = <T extends { unit_cost_at_sale?: unknown }>(rows: T[]) =>
   rows.map(({ unit_cost_at_sale: _cost, ...rest }) => rest);
 
+// A bill can mention a product or customer deleted since (on this PC or another one). The database
+// clears such links on rows it already has (on delete set null) but rejects new rows carrying them,
+// which would hold up every later change. Those bills are saved without the link instead.
+const isForeignKeyError = (
+  error: { code?: string; message?: string; details?: string } | null | undefined,
+  column: string
+) => !!error && error.code === '23503' && `${error.message ?? ''} ${error.details ?? ''}`.includes(column);
+
+const orderItemRow = (item: OrderItem) => ({
+  id: item.id,
+  order_id: item.orderId,
+  // Empty (or null from the cloud) once the product no longer exists.
+  product_id: item.productId || null,
+  product_name: item.productName,
+  product_sku: item.productSku,
+  quantity: item.quantity,
+  unit_price_at_sale: item.unitPriceAtSale,
+  unit_cost_at_sale: item.unitCostAtSale ?? null,
+  discount_amount: item.discountAmount,
+});
+type OrderItemRow = ReturnType<typeof orderItemRow>;
+
+async function upsertOrderItemRows(rows: OrderItemRow[]) {
+  let { error } = await supabase.from('order_items').upsert(rows, { onConflict: 'id' });
+  if (isMissingCostColumnError(error)) {
+    ({ error } = await supabase.from('order_items').upsert(withoutCostColumn(rows), { onConflict: 'id' }));
+  }
+  if (!isForeignKeyError(error, 'product_id')) return error;
+  // Lines of products deleted meanwhile keep their own name/SKU copy, just not the link.
+  const ids = [...new Set(rows.map((r) => r.product_id).filter((id): id is string => !!id))];
+  const { data, error: readError } = await supabase.from('products').select('id').in('id', ids);
+  if (readError) return readError;
+  const existing = new Set((data || []).map((p: { id: string }) => p.id));
+  const unlinked = rows.map((r) => (r.product_id && !existing.has(r.product_id) ? { ...r, product_id: null } : r));
+  ({ error } = await supabase.from('order_items').upsert(unlinked, { onConflict: 'id' }));
+  if (isMissingCostColumnError(error)) {
+    ({ error } = await supabase.from('order_items').upsert(withoutCostColumn(unlinked), { onConflict: 'id' }));
+  }
+  return error;
+}
+
+const orderEditLogRow = (log: OrderEditLog) => ({
+  id: log.id,
+  order_id: log.orderId,
+  edited_by: log.editedBy,
+  edited_at: log.editedAt,
+  changes_summary: log.changesSummary,
+  previous_order: log.previousOrder ?? null,
+  previous_items: log.previousItems ?? null,
+});
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
 /**
  * A plain database write. Used for queued changes that have no dedicated operation type.
  * Inserts are sent as upserts so a retry after a lost response never creates a duplicate.
@@ -343,6 +467,22 @@ async function updateWithoutTotals(table: 'customers' | 'suppliers', values: Rec
   if (Object.keys(rest).length === 0) return;
   const { error } = await supabase.from(table).update(rest).eq('id', id);
   if (error) throw error;
+}
+
+/**
+ * A supplier ledger entry as a database row. Description and date are required there, so an entry
+ * queued without them (by an older version) still uploads instead of being rejected for ever.
+ */
+function supplierPurchaseRow(p: SupplierPurchase) {
+  return {
+    id: p.id,
+    supplier_id: p.supplierId,
+    description: p.description?.trim() || (p.amount < 0 ? 'Payment to supplier' : 'Purchase'),
+    amount: p.amount,
+    purchase_date: p.purchaseDate || toLocalISODate(p.createdAt ? new Date(p.createdAt) : new Date()),
+    invoice_number: p.invoiceNumber,
+    created_at: p.createdAt,
+  };
 }
 
 /** A stock change, applied by the database exactly once (see apply_stock_movement). */
@@ -409,11 +549,12 @@ const MAX_DATABASE_ERROR_RETRIES = 5;
 const BACKGROUND_REFRESH_MS = 60000;
 const FULL_REFRESH_WHEN_LIVE_MS = 10 * 60000;
 // The database version this app needs (see MULTI_PC_SETUP.sql).
-const REQUIRED_SCHEMA_VERSION = 2;
+const REQUIRED_SCHEMA_VERSION = 3;
 // Tables whose changes on other PCs are applied here as they happen.
 const LIVE_TABLES = [
   'products', 'orders', 'order_items', 'customers', 'customer_transactions', 'customer_reminders',
   'suppliers', 'supplier_purchases', 'supplier_payment_schedules', 'categories', 'units', 'store_settings',
+  'order_edit_logs',
 ];
 
 interface LiveChange {
@@ -506,63 +647,54 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const executePendingSyncOperation = useCallback(async (op: PendingSyncOperation) => {
     switch (op.type) {
       case 'order_with_items': {
-        const payload = op.payload as { order: Order; orderItems: OrderItem[] };
-        const { order, orderItems } = payload;
-        const { error: orderError } = await supabase
-          .from('orders')
-          .upsert(
-            {
-              id: order.id,
-              created_at: order.createdAt,
-              cashier_id: order.cashierId,
-              cashier_name: order.cashierName,
-              subtotal: order.subtotal,
-              tax_amount: order.taxAmount,
-              discount_amount: order.discountAmount,
-              total_amount: order.totalAmount,
-              card_fee_amount: order.cardFeeAmount,
-              card_fee_rate: order.cardFeeRate,
-              payment_method: order.paymentMethod,
-              status: order.status,
-              amount_tendered: order.amountTendered,
-              change_given: order.changeGiven,
-              client_name: order.clientName,
-              client_phone: order.clientPhone,
-              transfer_type: order.transferType,
-              transaction_id: order.transactionId,
-              customer_id: order.customerId,
-            },
-            { onConflict: 'id' }
-          );
-
+        // A new bill, an exchange, or an edited bill (the whole bill again, plus the lines it no longer has).
+        const payload = op.payload as { order: Order; orderItems: OrderItem[]; removeItemIds?: string[] };
+        const { order, orderItems, removeItemIds } = payload;
+        const orderRow = {
+          id: order.id,
+          created_at: order.createdAt,
+          cashier_id: order.cashierId,
+          cashier_name: order.cashierName,
+          subtotal: order.subtotal,
+          tax_amount: order.taxAmount,
+          discount_amount: order.discountAmount,
+          total_amount: order.totalAmount,
+          card_fee_amount: order.cardFeeAmount ?? 0,
+          card_fee_rate: order.cardFeeRate ?? 0,
+          payment_method: order.paymentMethod,
+          status: order.status,
+          // Sent as null when empty, so a value cleared on an edited bill is cleared in the cloud too.
+          amount_tendered: order.amountTendered ?? null,
+          change_given: order.changeGiven ?? null,
+          client_name: order.clientName ?? null,
+          client_phone: order.clientPhone ?? null,
+          transfer_type: order.transferType ?? null,
+          transaction_id: order.transactionId ?? null,
+          customer_id: order.customerId || null,
+          original_order_id: order.originalOrderId ?? null,
+        };
+        let { error: orderError } = await supabase.from('orders').upsert(orderRow, { onConflict: 'id' });
+        if (isForeignKeyError(orderError, 'customer_id')) {
+          // The customer was deleted meanwhile: keep the sale, without the link.
+          ({ error: orderError } = await supabase.from('orders').upsert({ ...orderRow, customer_id: null }, { onConflict: 'id' }));
+        }
         if (orderError) throw orderError;
 
-        const itemRows = orderItems.map((item) => ({
-          id: item.id,
-          order_id: item.orderId,
-          product_id: item.productId,
-          product_name: item.productName,
-          product_sku: item.productSku,
-          quantity: item.quantity,
-          unit_price_at_sale: item.unitPriceAtSale,
-          unit_cost_at_sale: item.unitCostAtSale ?? null,
-          discount_amount: item.discountAmount,
-        }));
-        let { error: itemsError } = await supabase.from('order_items').upsert(itemRows, { onConflict: 'id' });
-        if (isMissingCostColumnError(itemsError)) {
-          ({ error: itemsError } = await supabase
-            .from('order_items')
-            .upsert(withoutCostColumn(itemRows), { onConflict: 'id' }));
-        }
-
+        // New lines are written before old ones are removed, so a failure never leaves the bill empty.
+        const itemsError = await upsertOrderItemRows(orderItems.map(orderItemRow));
         if (itemsError) throw itemsError;
+
+        if (removeItemIds && removeItemIds.length > 0) {
+          const { error } = await supabase.from('order_items').delete().in('id', removeItemIds);
+          if (error) throw error;
+        }
         return;
       }
 
       case 'product_add': {
         // omitStock: the opening stock is a separate stock movement, so a retried upsert can never
         // reset stock that other PCs have changed since.
-        const payload = op.payload as { newProduct: any; omitStock?: boolean };
+        const payload = op.payload as { newProduct: Product; omitStock?: boolean };
         const p = payload.newProduct;
         const { error } = await supabase.from('products').upsert(
           {
@@ -587,7 +719,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       }
 
       case 'product_update': {
-        const payload = op.payload as { id: string; dbUpdates: any };
+        const payload = op.payload as { id: string; dbUpdates: Record<string, unknown> };
         const { error } = await supabase
           .from('products')
           .update(payload.dbUpdates)
@@ -689,7 +821,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       }
 
       case 'customer_reminder_update': {
-        const payload = op.payload as { id: string; dbUpdates: any };
+        const payload = op.payload as { id: string; dbUpdates: Record<string, unknown> };
         const { error } = await supabase
           .from('customer_reminders')
           .update(payload.dbUpdates)
@@ -743,40 +875,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      case 'supplier_purchase_add': {
-        // The supplier's totals follow from the ledger entry in the database.
-        const payload = op.payload as { purchase: SupplierPurchase };
-        const { error } = await supabase.from('supplier_purchases').upsert(
-          {
-            id: payload.purchase.id,
-            supplier_id: payload.purchase.supplierId,
-            description: payload.purchase.description,
-            amount: payload.purchase.amount,
-            purchase_date: payload.purchase.purchaseDate,
-            invoice_number: payload.purchase.invoiceNumber,
-            created_at: payload.purchase.createdAt,
-          },
-          { onConflict: 'id' }
-        );
-        if (error) throw error;
-        return;
-      }
-
+      // The supplier's totals follow from the ledger entry in the database. (Older queued entries
+      // also carry totals; those are ignored.)
+      case 'supplier_purchase_add':
       case 'supplier_payment_add': {
         const payload = op.payload as { purchase: SupplierPurchase };
-        const p = payload.purchase;
-        const { error } = await supabase.from('supplier_purchases').upsert(
-          {
-            id: p.id,
-            supplier_id: p.supplierId,
-            description: p.description,
-            amount: p.amount,
-            purchase_date: p.purchaseDate,
-            invoice_number: p.invoiceNumber,
-            created_at: p.createdAt,
-          },
-          { onConflict: 'id' }
-        );
+        const { error } = await supabase
+          .from('supplier_purchases')
+          .upsert(supplierPurchaseRow(payload.purchase), { onConflict: 'id' });
         if (error) throw error;
         return;
       }
@@ -860,18 +966,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         for (const movement of payload.stockMovements || []) await applyStockMovement(movement);
 
         // The supplier's totals follow from these ledger entries in the database.
-        const { error } = await supabase.from('supplier_purchases').upsert(
-          payload.purchases.map((purchase) => ({
-            id: purchase.id,
-            supplier_id: purchase.supplierId,
-            description: purchase.description,
-            amount: purchase.amount,
-            purchase_date: purchase.purchaseDate,
-            invoice_number: purchase.invoiceNumber,
-            created_at: purchase.createdAt,
-          })),
-          { onConflict: 'id' }
-        );
+        const { error } = await supabase
+          .from('supplier_purchases')
+          .upsert(payload.purchases.map(supplierPurchaseRow), { onConflict: 'id' });
         if (error) throw error;
         return;
       }
@@ -898,7 +995,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       }
 
       case 'supplier_schedule_update': {
-        const payload = op.payload as { id: string; dbUpdates: any };
+        const payload = op.payload as { id: string; dbUpdates: Record<string, unknown> };
         const { error } = await supabase
           .from('supplier_payment_schedules')
           .update(payload.dbUpdates)
@@ -960,11 +1057,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           supplierId?: string;
           supplierUpdates?: Record<string, unknown>;
         };
-        const purchaseUpdates: Record<string, unknown> = payload.dbUpdates ?? {};
+        const purchaseUpdates: Record<string, unknown> = { ...(payload.dbUpdates ?? {}) };
         if (!payload.dbUpdates && payload.updates) {
           if (payload.updates.amount !== undefined) purchaseUpdates.amount = payload.updates.amount;
           if (payload.updates.description !== undefined) purchaseUpdates.description = payload.updates.description;
         }
+        // Description and date are required in the database: an empty one would be rejected for ever.
+        if ('description' in purchaseUpdates && !String(purchaseUpdates.description ?? '').trim()) delete purchaseUpdates.description;
+        if ('purchase_date' in purchaseUpdates && !purchaseUpdates.purchase_date) delete purchaseUpdates.purchase_date;
 
         // The supplier's totals follow from the edited entry in the database.
         if (Object.keys(purchaseUpdates).length > 0) {
@@ -1113,13 +1213,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // Latest data, so the background refresh can tell whether anything changed on this device meanwhile.
   const dataRef = useRef({
     products, units, categories, orders, orderItems, settings, customers, customerTransactions,
-    customerReminders, suppliers, supplierPurchases, supplierPaymentSchedules,
+    customerReminders, suppliers, supplierPurchases, supplierPaymentSchedules, orderEditLogs,
   });
   dataRef.current = {
     products, units, categories, orders, orderItems, settings, customers, customerTransactions,
-    customerReminders, suppliers, supplierPurchases, supplierPaymentSchedules,
+    customerReminders, suppliers, supplierPurchases, supplierPaymentSchedules, orderEditLogs,
   };
   const cloudLoadInProgressRef = useRef(false);
+  // Bill history entries found only on this PC that were queued for upload this session.
+  const editLogsQueuedRef = useRef(new Set<string>());
 
   /** Replaces local data with the cloud copy, table by table, skipping tables that did not change. */
   const applyCloudSnapshot = useCallback((snap: CloudSnapshot) => {
@@ -1143,7 +1245,27 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     if (snap.supplierPaymentSchedules && changed(current.supplierPaymentSchedules, snap.supplierPaymentSchedules)) {
       setSupplierPaymentSchedules(snap.supplierPaymentSchedules);
     }
-  }, []);
+    // Bill history is only ever added to, so entries kept only on this PC (saved before the cloud
+    // kept them, or still waiting to upload) are merged in rather than dropped, and uploaded once.
+    if (snap.orderEditLogs) {
+      const cloudLogs = snap.orderEditLogs;
+      const cloudIds = new Set(cloudLogs.map((l) => l.id));
+      const localOnly = current.orderEditLogs.filter((l) => !cloudIds.has(l.id));
+      setOrderEditLogs((prev) => {
+        const merged = [...cloudLogs, ...prev.filter((l) => !cloudIds.has(l.id))].sort(
+          (a, b) => Date.parse(a.editedAt) - Date.parse(b.editedAt)
+        );
+        return changed(prev, merged) ? merged : prev;
+      });
+      const toUpload = localOnly.filter((l) => !editLogsQueuedRef.current.has(l.id));
+      if (toUpload.length > 0) {
+        toUpload.forEach((l) => editLogsQueuedRef.current.add(l.id));
+        enqueuePendingSync('db_writes', {
+          writes: [{ table: 'order_edit_logs', kind: 'upsert', rows: toUpload.map(orderEditLogRow) }],
+        });
+      }
+    }
+  }, [enqueuePendingSync]);
 
   /**
    * Whether a cloud copy fetched since `startedAt` can replace local data without losing anything:
@@ -1216,6 +1338,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         break;
       case 'order_items':
         upsert(setOrderItems, isDelete ? null : mapOrderItem(row));
+        break;
+      case 'order_edit_logs':
+        upsert(setOrderEditLogs, isDelete ? null : mapOrderEditLog(row));
         break;
       case 'customers':
         upsert(setCustomers, isDelete ? null : mapCustomer(row), true);
@@ -1334,9 +1459,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           window.setTimeout(() => void refreshFromCloudRef.current(), 5000);
         }
 
-        // These two are not stored in Supabase, so they always come from the local database.
+        // Held carts are not stored in Supabase, so they always come from the local database.
+        // (Bill history was loaded from it above and merged with the cloud copy.)
         setHeldCarts(await loadArrayFromDexie('heldCarts'));
-        setOrderEditLogs(await loadArrayFromDexie('orderEditLogs'));
         setIsHydrated(true);
       } catch (error) {
         const rawMessage =
@@ -1572,11 +1697,48 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     void saveSettingsToDexie(settings);
   }, [settings, isHydrated]);
 
+  // Latest master data and ledgers (like productsRef), so a double click or two quick edits in a
+  // row never act on a stale copy (e.g. taking the same payment off a balance twice).
+  const unitsRef = useRef(units);
+  unitsRef.current = units;
+  const categoriesRef = useRef(categories);
+  categoriesRef.current = categories;
+  const customersRef = useRef(customers);
+  customersRef.current = customers;
+  const customerTransactionsRef = useRef(customerTransactions);
+  customerTransactionsRef.current = customerTransactions;
+  const customerRemindersRef = useRef(customerReminders);
+  customerRemindersRef.current = customerReminders;
+  const suppliersRef = useRef(suppliers);
+  suppliersRef.current = suppliers;
+  const supplierPurchasesRef = useRef(supplierPurchases);
+  supplierPurchasesRef.current = supplierPurchases;
+  const supplierPaymentSchedulesRef = useRef(supplierPaymentSchedules);
+  supplierPaymentSchedulesRef.current = supplierPaymentSchedules;
+
+  // A product must point at a category and unit that exist, or the database rejects it and the
+  // change never reaches the cloud.
+  const missingProductReference = (p: Partial<Pick<Product, 'categoryId' | 'unitId'>>): string | null => {
+    if (p.categoryId !== undefined && !categoriesRef.current.some((c) => c.id === p.categoryId)) {
+      return 'Choose a category for this product (its category no longer exists).';
+    }
+    if (p.unitId !== undefined && !unitsRef.current.some((u) => u.id === p.unitId)) {
+      return 'Choose a unit for this product (its unit no longer exists).';
+    }
+    return null;
+  };
+
   // Product functions
-  const addProduct = async (product: Omit<Product, 'id'>) => {
+  const addProduct = (product: Omit<Product, 'id'>): boolean => {
+    const problem = missingProductReference(product);
+    if (problem) {
+      toast.error(problem);
+      return false;
+    }
     const newProduct = { ...product, id: generateId() };
-    
+
     // Optimistic update
+    productsRef.current = [...productsRef.current, newProduct];
     setProducts((prev) => [...prev, newProduct]);
 
     if (import.meta.env.VITE_SUPABASE_URL) {
@@ -1593,19 +1755,23 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         });
       }
     } else {
-      void saveArrayToDexie('products', [...products, newProduct]);
+      void saveArrayToDexie('products', productsRef.current);
     }
+    return true;
   };
 
-  const updateProduct = async (id: string, updates: Partial<Product>) => {
+  const updateProduct = (id: string, updates: Partial<Product>): boolean => {
+    const problem = missingProductReference(updates);
+    if (problem) {
+      toast.error(problem);
+      return false;
+    }
     // A changed stock figure (e.g. a stock count typed in on the product form) is uploaded as the
     // difference, so sales made meanwhile on the other PC are not wiped out.
     const stockBefore = productsRef.current.find((p) => p.id === id)?.stockQuantity;
     const stockDelta =
       updates.stockQuantity !== undefined && stockBefore !== undefined ? updates.stockQuantity - stockBefore : 0;
-    if (updates.stockQuantity !== undefined) {
-      productsRef.current = productsRef.current.map((p) => (p.id === id ? { ...p, stockQuantity: updates.stockQuantity! } : p));
-    }
+    productsRef.current = productsRef.current.map((p) => (p.id === id ? { ...p, ...updates } : p));
 
     // Optimistic update
     setProducts((prev) =>
@@ -1636,9 +1802,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         enqueuePendingSync('product_update', { id, dbUpdates });
       }
     } else {
-      const updatedProducts = products.map((p) => (p.id === id ? { ...p, ...updates } : p));
-      void saveArrayToDexie('products', updatedProducts);
+      void saveArrayToDexie('products', productsRef.current);
     }
+    return true;
   };
 
   // Change stock by an amount (negative = sold) starting from the current value, not from a copy
@@ -1659,15 +1825,17 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return Promise.resolve();
   };
 
-  const deleteProducts = async (ids: string[]) => {
-    // Optimistic update
-    setProducts((prev) => prev.filter((p) => !ids.includes(p.id)));
+  // Past sales keep the product's name and SKU on their lines (the database sets the line's
+  // product link to null). The open sale and held bills drop it: see the cart clean-up below.
+  const deleteProducts = (ids: string[]) => {
+    const removing = new Set(ids);
+    productsRef.current = productsRef.current.filter((p) => !removing.has(p.id));
+    setProducts((prev) => prev.filter((p) => !removing.has(p.id)));
 
     if (import.meta.env.VITE_SUPABASE_URL) {
       enqueuePendingSync('product_delete', { ids });
     } else {
-      const remainingProducts = products.filter((p) => !ids.includes(p.id));
-      void saveArrayToDexie('products', remainingProducts);
+      void saveArrayToDexie('products', productsRef.current);
     }
   };
 
@@ -1675,40 +1843,95 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return products.find((p) => p.sku.toLowerCase() === sku.toLowerCase());
   };
 
+  // Unit and category names are compared trimmed and ignoring case. Unit names are unique in the
+  // database, so a duplicate would be rejected and never reach the cloud.
+  const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
   // Unit functions
-  const addUnit = async (unit: Omit<Unit, 'id'>) => {
-    const newUnit = { ...unit, id: generateId() };
+  const addUnit = (unit: Omit<Unit, 'id'>): boolean => {
+    const name = unit.name.trim();
+    if (!name) {
+      toast.error('Unit name is required');
+      return false;
+    }
+    if (unitsRef.current.some((u) => sameName(u.name, name))) {
+      toast.error(`A unit called "${name}" already exists`);
+      return false;
+    }
+    const newUnit: Unit = { id: generateId(), name, description: unit.description?.trim() || '' };
+    unitsRef.current = [...unitsRef.current, newUnit];
     setUnits((prev) => [...prev, newUnit]);
 
     if (import.meta.env.VITE_SUPABASE_URL) {
       enqueuePendingSync('db_writes', { writes: [{ table: 'units', kind: 'upsert', rows: newUnit }] });
     } else {
-      void saveArrayToDexie('units', [...units, newUnit]);
+      void saveArrayToDexie('units', unitsRef.current);
     }
+    return true;
   };
 
-  const updateUnit = async (id: string, updates: Partial<Unit>) => {
-    setUnits((prev) =>
-      prev.map((u) => (u.id === id ? { ...u, ...updates } : u))
-    );
+  const updateUnit = (id: string, updates: Partial<Unit>): boolean => {
+    const current = unitsRef.current.find((u) => u.id === id);
+    if (!current) return false;
+    const next: Unit = { ...current };
+    if (updates.name !== undefined) {
+      const name = updates.name.trim();
+      if (!name) {
+        toast.error('Unit name is required');
+        return false;
+      }
+      if (unitsRef.current.some((u) => u.id !== id && sameName(u.name, name))) {
+        toast.error(`A unit called "${name}" already exists`);
+        return false;
+      }
+      next.name = name;
+    }
+    if (updates.description !== undefined) next.description = updates.description.trim();
+    unitsRef.current = unitsRef.current.map((u) => (u.id === id ? next : u));
+    setUnits((prev) => prev.map((u) => (u.id === id ? next : u)));
 
     if (import.meta.env.VITE_SUPABASE_URL) {
-      enqueuePendingSync('db_writes', { writes: [{ table: 'units', kind: 'update', values: updates, eq: ['id', id] }] });
+      enqueuePendingSync('db_writes', {
+        writes: [{ table: 'units', kind: 'update', values: { name: next.name, description: next.description ?? null }, eq: ['id', id] }],
+      });
     } else {
-      const updatedUnits = units.map((u) => (u.id === id ? { ...u, ...updates } : u));
-      void saveArrayToDexie('units', updatedUnits);
+      void saveArrayToDexie('units', unitsRef.current);
     }
+    return true;
   };
 
-  const deleteUnit = async (id: string) => {
+  /**
+   * Deletes a unit. Products still using it must be moved to `replacementId`: the database refuses
+   * to delete a unit that products point at, so it would stay in the cloud while gone here.
+   */
+  const deleteUnit = (id: string, replacementId?: string): boolean => {
+    if (!unitsRef.current.some((u) => u.id === id)) return false;
+    const target =
+      replacementId && replacementId !== id && unitsRef.current.some((u) => u.id === replacementId) ? replacementId : undefined;
+    const inUse = productsRef.current.filter((p) => p.unitId === id).length;
+    if (inUse > 0 && !target) {
+      toast.error(`${inUse} product${inUse === 1 ? '' : 's'} still use this unit. Choose another unit for them first.`);
+      return false;
+    }
+
+    if (target) {
+      productsRef.current = productsRef.current.map((p) => (p.unitId === id ? { ...p, unitId: target } : p));
+      setProducts((prev) => prev.map((p) => (p.unitId === id ? { ...p, unitId: target } : p)));
+    }
+    unitsRef.current = unitsRef.current.filter((u) => u.id !== id);
     setUnits((prev) => prev.filter((u) => u.id !== id));
 
     if (import.meta.env.VITE_SUPABASE_URL) {
-      enqueuePendingSync('db_writes', { writes: [{ table: 'units', kind: 'delete', eq: ['id', id] }] });
+      // In this order: the products move first (also any the other PC added), then the unit goes.
+      const writes: DbWrite[] = [];
+      if (target) writes.push({ table: 'products', kind: 'update', values: { unit_id: target }, eq: ['unit_id', id] });
+      writes.push({ table: 'units', kind: 'delete', eq: ['id', id] });
+      enqueuePendingSync('db_writes', { writes });
     } else {
-      const remainingUnits = units.filter((u) => u.id !== id);
-      void saveArrayToDexie('units', remainingUnits);
+      void saveArrayToDexie('units', unitsRef.current);
+      void saveArrayToDexie('products', productsRef.current);
     }
+    return true;
   };
 
   const getUnitById = (id: string) => {
@@ -1716,39 +1939,88 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   };
 
   // Category functions
-  const addCategory = async (category: Omit<Category, 'id'>) => {
-    const newCategory = { ...category, id: generateId() };
+  const addCategory = (category: Omit<Category, 'id'>): boolean => {
+    const name = category.name.trim();
+    if (!name) {
+      toast.error('Category name is required');
+      return false;
+    }
+    if (categoriesRef.current.some((c) => sameName(c.name, name))) {
+      toast.error(`A category called "${name}" already exists`);
+      return false;
+    }
+    const newCategory: Category = { id: generateId(), name, description: category.description?.trim() || '' };
+    categoriesRef.current = [...categoriesRef.current, newCategory];
     setCategories((prev) => [...prev, newCategory]);
 
     if (import.meta.env.VITE_SUPABASE_URL) {
       enqueuePendingSync('db_writes', { writes: [{ table: 'categories', kind: 'upsert', rows: newCategory }] });
     } else {
-      void saveArrayToDexie('categories', [...categories, newCategory]);
+      void saveArrayToDexie('categories', categoriesRef.current);
     }
+    return true;
   };
 
-  const updateCategory = async (id: string, updates: Partial<Category>) => {
-    setCategories((prev) =>
-      prev.map((c) => (c.id === id ? { ...c, ...updates } : c))
-    );
+  const updateCategory = (id: string, updates: Partial<Category>): boolean => {
+    const current = categoriesRef.current.find((c) => c.id === id);
+    if (!current) return false;
+    const next: Category = { ...current };
+    if (updates.name !== undefined) {
+      const name = updates.name.trim();
+      if (!name) {
+        toast.error('Category name is required');
+        return false;
+      }
+      if (categoriesRef.current.some((c) => c.id !== id && sameName(c.name, name))) {
+        toast.error(`A category called "${name}" already exists`);
+        return false;
+      }
+      next.name = name;
+    }
+    if (updates.description !== undefined) next.description = updates.description.trim();
+    categoriesRef.current = categoriesRef.current.map((c) => (c.id === id ? next : c));
+    setCategories((prev) => prev.map((c) => (c.id === id ? next : c)));
 
     if (import.meta.env.VITE_SUPABASE_URL) {
-      enqueuePendingSync('db_writes', { writes: [{ table: 'categories', kind: 'update', values: updates, eq: ['id', id] }] });
+      enqueuePendingSync('db_writes', {
+        writes: [{ table: 'categories', kind: 'update', values: { name: next.name, description: next.description }, eq: ['id', id] }],
+      });
     } else {
-      const updatedCategories = categories.map((c) => (c.id === id ? { ...c, ...updates } : c));
-      void saveArrayToDexie('categories', updatedCategories);
+      void saveArrayToDexie('categories', categoriesRef.current);
     }
+    return true;
   };
 
-  const deleteCategory = async (id: string) => {
+  /** Deletes a category, moving products that still use it to `replacementId` first (see deleteUnit). */
+  const deleteCategory = (id: string, replacementId?: string): boolean => {
+    if (!categoriesRef.current.some((c) => c.id === id)) return false;
+    const target =
+      replacementId && replacementId !== id && categoriesRef.current.some((c) => c.id === replacementId)
+        ? replacementId
+        : undefined;
+    const inUse = productsRef.current.filter((p) => p.categoryId === id).length;
+    if (inUse > 0 && !target) {
+      toast.error(`${inUse} product${inUse === 1 ? '' : 's'} still use this category. Choose another category for them first.`);
+      return false;
+    }
+
+    if (target) {
+      productsRef.current = productsRef.current.map((p) => (p.categoryId === id ? { ...p, categoryId: target } : p));
+      setProducts((prev) => prev.map((p) => (p.categoryId === id ? { ...p, categoryId: target } : p)));
+    }
+    categoriesRef.current = categoriesRef.current.filter((c) => c.id !== id);
     setCategories((prev) => prev.filter((c) => c.id !== id));
 
     if (import.meta.env.VITE_SUPABASE_URL) {
-      enqueuePendingSync('db_writes', { writes: [{ table: 'categories', kind: 'delete', eq: ['id', id] }] });
+      const writes: DbWrite[] = [];
+      if (target) writes.push({ table: 'products', kind: 'update', values: { category_id: target }, eq: ['category_id', id] });
+      writes.push({ table: 'categories', kind: 'delete', eq: ['id', id] });
+      enqueuePendingSync('db_writes', { writes });
     } else {
-      const remainingCategories = categories.filter((c) => c.id !== id);
-      void saveArrayToDexie('categories', remainingCategories);
+      void saveArrayToDexie('categories', categoriesRef.current);
+      void saveArrayToDexie('products', productsRef.current);
     }
+    return true;
   };
 
   // Cart calculations
@@ -1839,17 +2111,41 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const recallCart = (id: string) => {
     const held = heldCarts.find((h) => h.id === id);
-    if (held) {
-      setCart(held.items);
-      setGlobalDiscountState(held.globalDiscount);
-      setGlobalDiscountType(held.globalDiscountType);
-      setHeldCarts((prev) => prev.filter((h) => h.id !== id));
-    }
+    if (!held) return;
+    // Recalling over an unfinished sale would lose it, so that sale is held instead.
+    const open: HeldCart | null =
+      cart.length > 0
+        ? { id: generateId(), items: [...cart], globalDiscount, globalDiscountType, heldAt: new Date().toISOString() }
+        : null;
+    setCart(held.items);
+    setGlobalDiscountState(held.globalDiscount);
+    setGlobalDiscountType(held.globalDiscountType);
+    setHeldCarts((prev) => [...prev.filter((h) => h.id !== id), ...(open ? [open] : [])]);
+    if (open) toast.info('The sale that was open has been put on hold.');
   };
 
   const deleteHeldCart = (id: string) => {
     setHeldCarts((prev) => prev.filter((h) => h.id !== id));
   };
+
+  // Products deleted here or on another PC leave the open sale and held bills. Selling one would
+  // upload a sale line for a product the database no longer has, and the whole sale would be rejected.
+  useEffect(() => {
+    if (!isHydrated) return;
+    const exists = new Set(products.map((p) => p.id));
+    const gone = cart.filter((item) => !exists.has(item.product.id));
+    if (gone.length > 0) {
+      setCart((prev) => prev.filter((item) => exists.has(item.product.id)));
+      toast.warning(`Removed from the sale (deleted from inventory): ${gone.map((item) => item.product.name).join(', ')}`);
+    }
+    if (heldCarts.some((h) => h.items.some((item) => !exists.has(item.product.id)))) {
+      setHeldCarts((prev) =>
+        prev
+          .map((h) => ({ ...h, items: h.items.filter((item) => exists.has(item.product.id)) }))
+          .filter((h) => h.items.length > 0)
+      );
+    }
+  }, [products, cart, heldCarts, isHydrated]);
 
   // Order functions
   const createOrder = async (options: CreateOrderOptions): Promise<Order> => {
@@ -1865,6 +2161,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       transactionId,
       customerId,
     } = options;
+
+    // Without a customer a credit sale would never reach anyone's account.
+    if (paymentMethod === 'credit' && !(customerId && customers.some((c) => c.id === customerId))) {
+      throw new Error('A credit sale needs a customer.');
+    }
 
     const subtotal = items.reduce((sum, item) => {
       const itemTotal = item.product.sellingPrice * item.quantity;
@@ -1968,7 +2269,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setOrders((prev) => prev.map((o) => (o.id === id ? { ...o, ...updates } : o)));
 
     if (import.meta.env.VITE_SUPABASE_URL) {
-      const dbUpdates: any = {};
+      const dbUpdates: Record<string, unknown> = {};
       if (updates.paymentMethod !== undefined) dbUpdates.payment_method = updates.paymentMethod;
       if (updates.status !== undefined) dbUpdates.status = updates.status;
       if (updates.amountTendered !== undefined) dbUpdates.amount_tendered = updates.amountTendered;
@@ -1986,162 +2287,195 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const cancelOrder = async (id: string) => {
+  /** What a bill looked like, kept in its history. */
+  const orderSnapshot = (o: Order): Partial<Order> => ({
+    subtotal: o.subtotal,
+    taxAmount: o.taxAmount,
+    discountAmount: o.discountAmount,
+    totalAmount: o.totalAmount,
+    paymentMethod: o.paymentMethod,
+    status: o.status,
+    clientName: o.clientName,
+    clientPhone: o.clientPhone,
+    customerId: o.customerId,
+    cardFeeAmount: o.cardFeeAmount,
+    cardFeeRate: o.cardFeeRate,
+    amountTendered: o.amountTendered,
+    changeGiven: o.changeGiven,
+    originalOrderId: o.originalOrderId,
+  });
+
+  /** Adds an entry to a bill's history (edit, cancellation, exchange) and uploads it. */
+  const recordOrderEditLog = (orderId: string, changesSummary: string, previous: Order, previousItems: OrderItem[]) => {
+    const log: OrderEditLog = {
+      id: generateId(),
+      orderId,
+      editedBy: user?.fullName || user?.email || 'Unknown',
+      editedAt: new Date().toISOString(),
+      changesSummary,
+      previousOrder: orderSnapshot(previous),
+      previousItems: [...previousItems],
+    };
+    setOrderEditLogs((prev) => [...prev, log]);
+    if (import.meta.env.VITE_SUPABASE_URL) {
+      editLogsQueuedRef.current.add(log.id);
+      enqueuePendingSync('db_writes', { writes: [{ table: 'order_edit_logs', kind: 'upsert', rows: orderEditLogRow(log) }] });
+    }
+  };
+
+  /** A customer ledger entry for a bill. The customer's totals follow from it, as in the database. */
+  const postOrderLedgerEntry = (entry: Omit<CustomerTransaction, 'id' | 'createdAt'>) => {
+    const transaction: CustomerTransaction = { ...entry, id: generateId(), createdAt: new Date().toISOString() };
+    setCustomerTransactions((prev) => [...prev, transaction]);
+    setCustomers((prev) =>
+      prev.map((c) => (c.id === transaction.customerId ? applyCustomerLedger(c, { added: [transaction] }) : c))
+    );
+    if (import.meta.env.VITE_SUPABASE_URL) {
+      enqueuePendingSync(transaction.type === 'credit' ? 'customer_credit' : 'customer_payment', { transaction });
+    }
+  };
+
+  /**
+   * Takes off customer accounts whatever a bill still puts on them: the credit its ledger entries
+   * add up to (a credit sale less any reversals) is reversed, and a refund to the account (an
+   * exchange with a negative total) is taken back. Customers deleted since are skipped.
+   */
+  const reverseOrderLedger = (orderId: string, label: string) => {
+    const netCredit = new Map<string, number>();
+    for (const t of customerTransactions) {
+      if (t.orderId !== orderId) continue;
+      netCredit.set(t.customerId, (netCredit.get(t.customerId) || 0) + customerTxEffect(t).credit);
+    }
+    for (const [customerId, amount] of netCredit) {
+      if (Math.abs(amount) < 0.005 || !customers.some((c) => c.id === customerId)) continue;
+      postOrderLedgerEntry(
+        amount > 0
+          ? { customerId, orderId, type: 'payment', amount, description: `Credit reversal - ${label}` }
+          : { customerId, orderId, type: 'credit', amount: -amount, description: `Refund taken back - ${label}` }
+      );
+    }
+  };
+
+  const cancelOrder = async (id: string, reason?: string): Promise<boolean> => {
     const order = orders.find((o) => o.id === id);
-    if (!order || order.status === 'refunded') return;
+    if (!order) {
+      toast.error('Bill not found');
+      return false;
+    }
+    // A bill with exchanges against it would count those goods and refunds twice.
+    const blocked = cancelBlockReason(order, orders);
+    if (blocked) {
+      toast.error(blocked);
+      return false;
+    }
 
     const relatedItems = getOrderItems(id);
+    const exchange = isExchangeOrder(order);
 
-    // Restore stock for all items in the cancelled order.
+    // Put stock back. On an exchange the returned goods (negative lines) go out of stock again.
     for (const item of relatedItems) {
-      await adjustProductStock(item.productId, item.quantity, 'Bill cancelled', id);
+      await adjustProductStock(item.productId, item.quantity, exchange ? 'Exchange cancelled' : 'Bill cancelled', id);
     }
 
     await updateOrder(id, { status: 'refunded' });
 
-    if (order.paymentMethod === 'credit' && order.customerId) {
-      const customer = customers.find((c) => c.id === order.customerId);
-      if (!customer) return;
+    reverseOrderLedger(id, `Cancelled ${exchange ? 'exchange' : 'order'} #${billNumber(id)}`);
 
-      const reversalAmount = order.totalAmount;
-      const creditAfterReversal = Math.max(0, customer.totalCredit - reversalAmount);
-      const updatedBalance = creditAfterReversal - customer.totalPaid;
-
-      setCustomers((prev) =>
-        prev.map((c) =>
-          c.id === customer.id
-            ? {
-                ...c,
-                totalCredit: creditAfterReversal,
-                balance: updatedBalance,
-              }
-            : c
-        )
+    const note = reason?.trim() ? ` Reason: ${reason.trim()}` : '';
+    recordOrderEditLog(id, `${exchange ? 'Exchange' : 'Bill'} cancelled.${note}`, order, relatedItems);
+    const original = exchange ? orders.find((o) => o.id === order.originalOrderId) : undefined;
+    if (original) {
+      recordOrderEditLog(
+        original.id,
+        `Exchange #${billNumber(id)} cancelled (it ${describeExchange(relatedItems, order.totalAmount, order.paymentMethod)}).${note}`,
+        original,
+        getOrderItems(original.id)
       );
-
-      const reversalTransaction: CustomerTransaction = {
-        id: generateId(),
-        customerId: customer.id,
-        orderId: order.id,
-        type: 'payment',
-        amount: reversalAmount,
-        description: `Credit reversal - Cancelled order #${order.id.slice(-8).toUpperCase()}`,
-        createdAt: new Date().toISOString(),
-      };
-      setCustomerTransactions((prev) => [...prev, reversalTransaction]);
-
-      if (import.meta.env.VITE_SUPABASE_URL) {
-        enqueuePendingSync('db_writes', {
-          writes: [
-            {
-              table: 'customer_transactions',
-              kind: 'upsert',
-              rows: {
-                id: reversalTransaction.id,
-                customer_id: reversalTransaction.customerId,
-                order_id: reversalTransaction.orderId,
-                type: reversalTransaction.type,
-                amount: reversalTransaction.amount,
-                description: reversalTransaction.description,
-                created_at: reversalTransaction.createdAt,
-              },
-            },
-            {
-              table: 'customers',
-              kind: 'update',
-              values: { total_credit: creditAfterReversal, balance: updatedBalance },
-              eq: ['id', customer.id],
-            },
-          ],
-        });
-      }
     }
+    return true;
   };
 
-  const updateOrderFull = async (
-    id: string,
-    newItems: Array<{
-      productId: string;
-      productName: string;
-      productSku: string;
-      quantity: number;
-      unitPrice: number;
-      discountAmount: number;
-    }>,
-    orderUpdates: Partial<Order>
-  ) => {
+  const updateOrderFull = async (id: string, newItems: BillEditLine[], orderUpdates: Partial<Order>): Promise<boolean> => {
     const existingOrder = orders.find((o) => o.id === id);
     if (!existingOrder) {
-      toast.error('Order not found');
-      return;
+      toast.error('Bill not found');
+      return false;
     }
-    if (existingOrder.status === 'refunded') {
-      toast.error('Cannot edit a cancelled/refunded bill');
-      return;
+    // Cancelled bills, exchanges, and bills with exchanges against them can't be changed.
+    const blocked = editBlockReason(existingOrder, orders);
+    if (blocked) {
+      toast.error(blocked);
+      return false;
     }
+    if (newItems.length === 0) {
+      toast.error('Bill must have at least one item');
+      return false;
+    }
+    const badLine = newItems.find(
+      (i) => !Number.isInteger(i.quantity) || i.quantity < 1 || !(i.unitPrice >= 0) || !(i.discountAmount >= 0)
+    );
+    if (badLine) {
+      toast.error(`Check the quantity, price and discount of ${badLine.productName}`);
+      return false;
+    }
+
+    const finalPaymentMethod = orderUpdates.paymentMethod || existingOrder.paymentMethod;
+    // `customerId` given but empty removes the customer. A customer deleted since can't stay linked.
+    const wantedCustomerId = 'customerId' in orderUpdates ? orderUpdates.customerId : existingOrder.customerId;
+    const finalCustomerId = wantedCustomerId && customers.some((c) => c.id === wantedCustomerId) ? wantedCustomerId : undefined;
+    if (finalPaymentMethod === 'credit' && !finalCustomerId) {
+      toast.error('A credit bill needs a customer. Choose one, or pick another payment method.');
+      return false;
+    }
+    const finalClientName = 'clientName' in orderUpdates ? orderUpdates.clientName || undefined : existingOrder.clientName;
+    const finalClientPhone = 'clientPhone' in orderUpdates ? orderUpdates.clientPhone || undefined : existingOrder.clientPhone;
 
     const oldItems = orderItems.filter((item) => item.orderId === id);
+    // The bill line an edited line came from (lines of deleted products have no product id to match on).
+    const sourceOf = (line: BillEditLine) =>
+      (line.sourceItemId ? oldItems.find((o) => o.id === line.sourceItemId) : undefined) ??
+      (line.productId ? oldItems.find((o) => o.productId === line.productId) : undefined);
 
-    // --- Build audit log ---
+    // --- History entry ---
     const changes: string[] = [];
-    const oldItemMap = new Map(oldItems.map((i) => [i.productId, i]));
-    const newItemMap = new Map(newItems.map((i) => [i.productId, i]));
-
-    // Check removed items
-    for (const oi of oldItems) {
-      if (!newItemMap.has(oi.productId)) {
-        changes.push(`Removed ${oi.productName} (×${oi.quantity})`);
-      }
-    }
-    // Check added or changed items
+    const keptLines = new Set<string>();
     for (const ni of newItems) {
-      const existing = oldItemMap.get(ni.productId);
+      const existing = sourceOf(ni);
       if (!existing) {
         changes.push(`Added ${ni.productName} (×${ni.quantity})`);
-      } else {
-        const diffs: string[] = [];
-        if (existing.quantity !== ni.quantity) diffs.push(`qty: ${existing.quantity}→${ni.quantity}`);
-        if (existing.unitPriceAtSale !== ni.unitPrice) diffs.push(`price: ${existing.unitPriceAtSale}→${ni.unitPrice}`);
-        if (existing.discountAmount !== ni.discountAmount) diffs.push(`discount: ${existing.discountAmount}→${ni.discountAmount}`);
-        if (diffs.length > 0) changes.push(`${ni.productName}: ${diffs.join(', ')}`);
+        continue;
       }
+      keptLines.add(existing.id);
+      const diffs: string[] = [];
+      if (existing.quantity !== ni.quantity) diffs.push(`qty: ${existing.quantity}→${ni.quantity}`);
+      if (existing.unitPriceAtSale !== ni.unitPrice) diffs.push(`price: ${existing.unitPriceAtSale}→${ni.unitPrice}`);
+      if (existing.discountAmount !== ni.discountAmount) diffs.push(`discount: ${existing.discountAmount}→${ni.discountAmount}`);
+      if (diffs.length > 0) changes.push(`${ni.productName}: ${diffs.join(', ')}`);
     }
-    // Check order-level field changes
-    if (orderUpdates.clientName !== undefined && orderUpdates.clientName !== existingOrder.clientName) {
-      changes.push(`Client name: "${existingOrder.clientName || ''}" → "${orderUpdates.clientName}"`);
+    for (const oi of oldItems) {
+      if (!keptLines.has(oi.id)) changes.push(`Removed ${oi.productName} (×${oi.quantity})`);
     }
-    if (orderUpdates.clientPhone !== undefined && orderUpdates.clientPhone !== existingOrder.clientPhone) {
-      changes.push(`Client phone: "${existingOrder.clientPhone || ''}" → "${orderUpdates.clientPhone}"`);
+    if ((finalClientName || '') !== (existingOrder.clientName || '')) {
+      changes.push(`Client name: "${existingOrder.clientName || ''}" → "${finalClientName || ''}"`);
     }
-    if (orderUpdates.paymentMethod !== undefined && orderUpdates.paymentMethod !== existingOrder.paymentMethod) {
-      changes.push(`Payment: ${existingOrder.paymentMethod} → ${orderUpdates.paymentMethod}`);
+    if ((finalClientPhone || '') !== (existingOrder.clientPhone || '')) {
+      changes.push(`Client phone: "${existingOrder.clientPhone || ''}" → "${finalClientPhone || ''}"`);
     }
-
-    const editLog: OrderEditLog = {
-      id: generateId(),
-      orderId: id,
-      editedBy: user?.fullName || user?.email || 'Unknown',
-      editedAt: new Date().toISOString(),
-      changesSummary: changes.length > 0 ? changes.join('; ') : 'No changes detected',
-      previousOrder: {
-        subtotal: existingOrder.subtotal,
-        taxAmount: existingOrder.taxAmount,
-        discountAmount: existingOrder.discountAmount,
-        totalAmount: existingOrder.totalAmount,
-        paymentMethod: existingOrder.paymentMethod,
-        clientName: existingOrder.clientName,
-        clientPhone: existingOrder.clientPhone,
-      },
-      previousItems: [...oldItems],
-    };
+    if (finalPaymentMethod !== existingOrder.paymentMethod) {
+      changes.push(`Payment: ${existingOrder.paymentMethod} → ${finalPaymentMethod}`);
+    }
+    if ((existingOrder.customerId || undefined) !== finalCustomerId) {
+      const nameOf = (cid?: string) => (cid ? customers.find((c) => c.id === cid)?.name || 'deleted customer' : 'none');
+      changes.push(`Customer: ${nameOf(existingOrder.customerId)} → ${nameOf(finalCustomerId)}`);
+    }
 
     // --- Stock: apply only the difference between the old and the new quantities ---
     const stockDeltas = new Map<string, number>();
     for (const oi of oldItems) {
-      stockDeltas.set(oi.productId, (stockDeltas.get(oi.productId) || 0) + oi.quantity);
+      if (oi.productId) stockDeltas.set(oi.productId, (stockDeltas.get(oi.productId) || 0) + oi.quantity);
     }
     for (const ni of newItems) {
-      stockDeltas.set(ni.productId, (stockDeltas.get(ni.productId) || 0) - ni.quantity);
+      if (ni.productId) stockDeltas.set(ni.productId, (stockDeltas.get(ni.productId) || 0) - ni.quantity);
     }
 
     if (!settings.allowNegativeStock) {
@@ -2149,7 +2483,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         const product = productsRef.current.find((p) => p.id === productId);
         if (product && delta < 0 && product.stockQuantity + delta < 0) {
           toast.error(`Insufficient stock for ${product.name}`);
-          return;
+          return false;
         }
       }
     }
@@ -2159,167 +2493,65 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
 
     // --- Recalculate totals (keeps the bill's cart-wide discount and the tax rate it was sold with) ---
-    const paymentMethod = orderUpdates.paymentMethod || existingOrder.paymentMethod;
     const { subtotal, taxAmount, cardFeeRate, cardFeeAmount, totalAmount, totalDiscount } = computeEditedOrderTotals({
       existingOrder,
       oldItems,
       newItems,
-      paymentMethod,
+      paymentMethod: finalPaymentMethod,
       fallbackTaxRate: settings.taxRate,
       fallbackCardFeePercent: settings.cardFeePercent || 0,
     });
 
-    // --- LEDGER SYNCHRONIZATION (High Reliability) ---
-    const finalPaymentMethod = orderUpdates.paymentMethod || existingOrder.paymentMethod;
-    const finalCustomerId = orderUpdates.customerId || existingOrder.customerId;
-    
-    const ledgerFieldsChanged = 
-        Number(existingOrder.totalAmount.toFixed(2)) !== totalAmount || 
-        existingOrder.paymentMethod !== finalPaymentMethod || 
-        existingOrder.customerId !== finalCustomerId;
+    // --- Customer account: take off what the bill put on it, then put the new amount on ---
+    const ledgerFieldsChanged =
+      round2(existingOrder.totalAmount) !== totalAmount ||
+      existingOrder.paymentMethod !== finalPaymentMethod ||
+      (existingOrder.customerId || undefined) !== finalCustomerId;
 
     if (ledgerFieldsChanged) {
-        // Step 1: Reverse old debt if it existed
-        if (existingOrder.paymentMethod === 'credit' && existingOrder.customerId) {
-            const oldCustomer = customers.find((c) => c.id === existingOrder.customerId);
-            if (oldCustomer) {
-                const reversalAmount = Number(existingOrder.totalAmount.toFixed(2));
-                const newTotalCredit = Number((oldCustomer.totalCredit - reversalAmount).toFixed(2));
-                const newBalance = Number((newTotalCredit - oldCustomer.totalPaid).toFixed(2));
-
-                // Update Local State
-                setCustomers((prev) =>
-                    prev.map((c) =>
-                        c.id === oldCustomer.id
-                            ? { ...c, totalCredit: newTotalCredit, balance: newBalance }
-                            : c
-                    )
-                );
-
-                const reversalTransaction: CustomerTransaction = {
-                    id: generateId(),
-                    customerId: oldCustomer.id,
-                    orderId: id,
-                    type: 'payment',
-                    amount: reversalAmount,
-                    description: `Credit reversal - Edited order #${id.slice(-8).toUpperCase()}`,
-                    createdAt: new Date().toISOString(),
-                };
-                setCustomerTransactions((prev) => [...prev, reversalTransaction]);
-
-                if (import.meta.env.VITE_SUPABASE_URL) {
-                    enqueuePendingSync('db_writes', {
-                        writes: [
-                            {
-                                table: 'customer_transactions',
-                                kind: 'upsert',
-                                rows: {
-                                    id: reversalTransaction.id,
-                                    customer_id: reversalTransaction.customerId,
-                                    order_id: reversalTransaction.orderId,
-                                    type: reversalTransaction.type,
-                                    amount: reversalTransaction.amount,
-                                    description: reversalTransaction.description,
-                                    created_at: reversalTransaction.createdAt,
-                                },
-                            },
-                            {
-                                table: 'customers',
-                                kind: 'update',
-                                values: { total_credit: newTotalCredit, balance: newBalance },
-                                eq: ['id', oldCustomer.id],
-                            },
-                        ],
-                    });
-                }
-            }
-        }
-
-        // Step 2: Apply new debt if applicable
-        if (finalPaymentMethod === 'credit' && finalCustomerId) {
-            const baseCustomer = customers.find(c => c.id === finalCustomerId);
-            if (baseCustomer) {
-                let customerTotalCredit = baseCustomer.totalCredit;
-                if (existingOrder.customerId === finalCustomerId && existingOrder.paymentMethod === 'credit') {
-                    customerTotalCredit -= Number(existingOrder.totalAmount.toFixed(2));
-                }
-                
-                const newTotalCredit = Number((customerTotalCredit + totalAmount).toFixed(2));
-                const newBalance = Number((newTotalCredit - baseCustomer.totalPaid).toFixed(2));
-                
-                // Update Local State
-                setCustomers((prev) =>
-                    prev.map((c) =>
-                        c.id === finalCustomerId
-                            ? { ...c, totalCredit: newTotalCredit, balance: newBalance }
-                            : c
-                    )
-                );
-
-                const creditTransaction: CustomerTransaction = {
-                    id: generateId(),
-                    customerId: finalCustomerId,
-                    orderId: id,
-                    type: 'credit',
-                    amount: totalAmount,
-                    description: `Credit sale - Edited order #${id.slice(-8).toUpperCase()}`,
-                    createdAt: new Date().toISOString(),
-                };
-                setCustomerTransactions((prev) => [...prev, creditTransaction]);
-
-                if (import.meta.env.VITE_SUPABASE_URL) {
-                    enqueuePendingSync('db_writes', {
-                        writes: [
-                            {
-                                table: 'customer_transactions',
-                                kind: 'upsert',
-                                rows: {
-                                    id: creditTransaction.id,
-                                    customer_id: creditTransaction.customerId,
-                                    order_id: creditTransaction.orderId,
-                                    type: creditTransaction.type,
-                                    amount: creditTransaction.amount,
-                                    description: creditTransaction.description,
-                                    created_at: creditTransaction.createdAt,
-                                },
-                            },
-                            {
-                                table: 'customers',
-                                kind: 'update',
-                                values: { total_credit: newTotalCredit, balance: newBalance },
-                                eq: ['id', finalCustomerId],
-                            },
-                        ],
-                    });
-                }
-            }
-        }
+      const label = `Edited order #${billNumber(id)}`;
+      reverseOrderLedger(id, label);
+      if (finalPaymentMethod === 'credit' && finalCustomerId && totalAmount > 0) {
+        postOrderLedgerEntry({
+          customerId: finalCustomerId,
+          orderId: id,
+          type: 'credit',
+          amount: totalAmount,
+          description: `Credit sale - ${label}`,
+        });
+      }
     }
 
-    // --- Build new OrderItem[] ---
-    const newOrderItems: OrderItem[] = newItems.map((item) => ({
-      id: generateId(),
-      orderId: id,
-      productId: item.productId,
-      productName: item.productName,
-      productSku: item.productSku,
-      quantity: item.quantity,
-      unitPriceAtSale: item.unitPrice,
-      // Keep the cost recorded when the bill was made; only newly added products use today's cost.
-      unitCostAtSale:
-        oldItems.find((o) => o.productId === item.productId)?.unitCostAtSale ??
-        products.find((p) => p.id === item.productId)?.costPrice,
-      discountAmount: item.discountAmount,
-    }));
+    // --- New lines ---
+    const newOrderItems: OrderItem[] = newItems.map((item) => {
+      const source = sourceOf(item);
+      const product = item.productId ? productsRef.current.find((p) => p.id === item.productId) : undefined;
+      return {
+        id: generateId(),
+        orderId: id,
+        // Empty once the product is deleted: the cloud would refuse a link to a missing product.
+        productId: product ? item.productId : '',
+        productName: item.productName,
+        productSku: item.productSku,
+        quantity: item.quantity,
+        unitPriceAtSale: item.unitPrice,
+        // Keep the cost recorded when the bill was made; only newly added products use today's cost.
+        unitCostAtSale: source?.unitCostAtSale ?? product?.costPrice,
+        discountAmount: item.discountAmount,
+      };
+    });
 
-    // --- Update state ---
-    setOrderItems((prev) => [
-      ...prev.filter((item) => item.orderId !== id),
-      ...newOrderItems,
-    ]);
+    // Change is worked out again from the cash handed over; cleared once that no longer covers the bill.
+    const tendered = existingOrder.amountTendered;
+    const cashCovers = finalPaymentMethod === 'cash' && typeof tendered === 'number' && tendered >= totalAmount;
 
-    const orderUpdate: Partial<Order> = {
+    const updatedOrder: Order = {
+      ...existingOrder,
       ...orderUpdates,
+      paymentMethod: finalPaymentMethod,
+      customerId: finalCustomerId,
+      clientName: finalClientName,
+      clientPhone: finalClientPhone,
       subtotal,
       taxAmount,
       discountAmount: totalDiscount,
@@ -2328,67 +2560,176 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       cardFeeRate: cardFeeRate || undefined,
       // Changing to/from credit changes whether the bill counts as pending.
       status: finalPaymentMethod === 'credit' ? 'credit' : 'completed',
+      amountTendered: cashCovers ? tendered : undefined,
+      changeGiven: cashCovers ? round2(tendered - totalAmount) : undefined,
+      transferType: finalPaymentMethod === 'transfer' ? orderUpdates.transferType ?? existingOrder.transferType : undefined,
+      transactionId: finalPaymentMethod === 'transfer' ? orderUpdates.transactionId ?? existingOrder.transactionId : undefined,
     };
 
-    setOrders((prev) =>
-      prev.map((o) => (o.id === id ? { ...o, ...orderUpdate } : o))
-    );
+    setOrderItems((prev) => [...prev.filter((item) => item.orderId !== id), ...newOrderItems]);
+    setOrders((prev) => prev.map((o) => (o.id === id ? updatedOrder : o)));
 
-    // Persist edit log
-    const updatedLogs = [...orderEditLogs, editLog];
-    setOrderEditLogs(updatedLogs);
-
-    // --- Persist to storage ---
     if (import.meta.env.VITE_SUPABASE_URL) {
-      const dbUpdates: Record<string, unknown> = {};
-      if (orderUpdate.subtotal !== undefined) dbUpdates.subtotal = orderUpdate.subtotal;
-      if (orderUpdate.taxAmount !== undefined) dbUpdates.tax_amount = orderUpdate.taxAmount;
-      if (orderUpdate.discountAmount !== undefined) dbUpdates.discount_amount = orderUpdate.discountAmount;
-      if (orderUpdate.totalAmount !== undefined) dbUpdates.total_amount = orderUpdate.totalAmount;
-      if (orderUpdate.paymentMethod !== undefined) dbUpdates.payment_method = orderUpdate.paymentMethod;
-      if (orderUpdate.clientName !== undefined) dbUpdates.client_name = orderUpdate.clientName;
-      if (orderUpdate.clientPhone !== undefined) dbUpdates.client_phone = orderUpdate.clientPhone;
-      // Written explicitly (0 when not a card sale) so a stale card fee never stays in the database.
-      dbUpdates.card_fee_amount = cardFeeAmount;
-      dbUpdates.card_fee_rate = cardFeeRate;
-      dbUpdates.status = orderUpdate.status;
-      if (orderUpdate.customerId !== undefined) dbUpdates.customer_id = orderUpdate.customerId;
-
-      const oldItemIds = oldItems.map((item) => item.id);
-      // New lines are written before the old ones are removed, so a failure never leaves the bill empty.
-      const writes: DbWrite[] = [
-        {
-          table: 'order_items',
-          kind: 'upsert',
-          rows: newOrderItems.map((item) => ({
-            id: item.id,
-            order_id: item.orderId,
-            product_id: item.productId,
-            product_name: item.productName,
-            product_sku: item.productSku,
-            quantity: item.quantity,
-            unit_price_at_sale: item.unitPriceAtSale,
-            unit_cost_at_sale: item.unitCostAtSale ?? null,
-            discount_amount: item.discountAmount,
-          })),
-        },
-      ];
-      if (oldItemIds.length > 0) writes.push({ table: 'order_items', kind: 'delete', in: ['id', oldItemIds] });
-      writes.push({ table: 'orders', kind: 'update', values: dbUpdates, eq: ['id', id] });
-      enqueuePendingSync('db_writes', { writes });
-    } else {
-      const allOrders = orders.map((o) => (o.id === id ? { ...o, ...orderUpdate } : o));
-      void saveArrayToDexie('orders', allOrders);
-      const allItems = orderItems.filter((item) => item.orderId !== id).concat(newOrderItems);
-      void saveArrayToDexie('orderItems', allItems);
-      void saveArrayToDexie('orderEditLogs', updatedLogs);
+      // The whole bill is uploaded again (so cleared fields are cleared in the cloud too), then the old lines removed.
+      enqueuePendingSync('order_with_items', {
+        order: updatedOrder,
+        orderItems: newOrderItems,
+        removeItemIds: oldItems.map((item) => item.id),
+      });
     }
 
+    recordOrderEditLog(id, changes.length > 0 ? changes.join('; ') : 'No changes detected', existingOrder, oldItems);
     toast.success('Bill updated successfully');
+    return true;
   };
 
   const getOrderEditLogs = (orderId: string): OrderEditLog[] => {
     return orderEditLogs.filter((log) => log.orderId === orderId);
+  };
+
+  const createExchange = async (
+    originalOrderId: string,
+    returns: Array<{ itemId: string; quantity: number }>,
+    newItems: Array<{ productId: string; quantity: number; unitPrice: number; discountAmount: number }>,
+    settlement: ExchangeSettlement
+  ): Promise<Order> => {
+    const original = orders.find((o) => o.id === originalOrderId);
+    if (!original) throw new Error('Bill not found.');
+    const blocked = exchangeBlockReason(original);
+    if (blocked) throw new Error(blocked);
+
+    // --- What comes back (never more than is still on the bill) ---
+    const returnable = getReturnableLines(original, orders, orderItems);
+    const returnQty = new Map<string, number>();
+    for (const r of returns) returnQty.set(r.itemId, (returnQty.get(r.itemId) || 0) + r.quantity);
+    const returnInputs: ExchangeReturn[] = [];
+    for (const [itemId, quantity] of returnQty) {
+      if (!quantity) continue;
+      const line = returnable.find((l) => l.item.id === itemId);
+      if (!line) throw new Error('A returned item is not on this bill.');
+      if (!Number.isInteger(quantity) || quantity < 0 || quantity > line.returnable) {
+        throw new Error(`Only ${line.returnable} x ${line.item.productName} can be returned.`);
+      }
+      returnInputs.push({ item: line.item, alreadyReturned: line.returned, quantity });
+    }
+    if (returnInputs.length === 0) throw new Error('Choose at least one item the customer is bringing back.');
+
+    // --- What the customer takes instead ---
+    const newInputs: ExchangeNewItem[] = [];
+    for (const n of newItems) {
+      if (!n.quantity) continue;
+      const product = productsRef.current.find((p) => p.id === n.productId);
+      if (!product) throw new Error('A new item is no longer in the product list.');
+      if (!Number.isInteger(n.quantity) || n.quantity < 0 || !(n.unitPrice >= 0) || !(n.discountAmount >= 0)) {
+        throw new Error(`Check the quantity, price and discount of ${product.name}.`);
+      }
+      newInputs.push({
+        productId: product.id,
+        productName: product.name,
+        productSku: product.sku,
+        quantity: n.quantity,
+        unitPrice: n.unitPrice,
+        unitCost: product.costPrice,
+        discountAmount: n.discountAmount,
+      });
+    }
+
+    // Stock for the new items; returned units of the same product count towards it.
+    if (!settings.allowNegativeStock) {
+      const deltas = new Map<string, number>();
+      for (const r of returnInputs) {
+        if (r.item.productId) deltas.set(r.item.productId, (deltas.get(r.item.productId) || 0) + r.quantity);
+      }
+      for (const n of newInputs) deltas.set(n.productId, (deltas.get(n.productId) || 0) - n.quantity);
+      for (const [productId, delta] of deltas) {
+        const product = productsRef.current.find((p) => p.id === productId);
+        if (product && delta < 0 && product.stockQuantity + delta < 0) {
+          throw new Error(`Insufficient stock for ${product.name}.`);
+        }
+      }
+    }
+
+    const { paymentMethod } = settlement;
+    const customer = settlement.customerId ? customers.find((c) => c.id === settlement.customerId) : undefined;
+    if (paymentMethod === 'credit' && !customer) {
+      throw new Error('Choose the customer whose account this goes on.');
+    }
+
+    const { lines, totals } = computeExchange({
+      original,
+      originalItems: orderItems.filter((i) => i.orderId === original.id),
+      returns: returnInputs,
+      newItems: newInputs,
+      paymentMethod,
+      taxRate: settings.taxRate,
+      cardFeePercent: settings.cardFeePercent || 0,
+    });
+    const total = totals.totalAmount;
+    const tendered = paymentMethod === 'cash' && total > 0 && settlement.amountTendered ? settlement.amountTendered : undefined;
+    if (tendered !== undefined && tendered < total) throw new Error('The cash received is less than the amount due.');
+
+    const id = generateId();
+    // Name and phone stay as on the bill unless the exchange is put on another customer.
+    const otherCustomer = customer && customer.id !== original.customerId ? customer : undefined;
+    const order: Order = {
+      id,
+      createdAt: new Date().toISOString(),
+      cashierId: user?.id || 'unknown',
+      cashierName: user?.fullName || 'Unknown',
+      subtotal: totals.subtotal,
+      taxAmount: totals.taxAmount,
+      discountAmount: totals.discountAmount,
+      totalAmount: total,
+      cardFeeAmount: totals.cardFeeAmount || undefined,
+      cardFeeRate: totals.cardFeeRate || undefined,
+      paymentMethod,
+      status: paymentMethod === 'credit' && total > 0 ? 'credit' : 'completed',
+      amountTendered: tendered,
+      changeGiven: tendered !== undefined ? round2(tendered - total) : undefined,
+      clientName: otherCustomer ? otherCustomer.name : original.clientName ?? customer?.name,
+      clientPhone: otherCustomer ? otherCustomer.phone : original.clientPhone ?? customer?.phone,
+      transferType: paymentMethod === 'transfer' ? settlement.transferType : undefined,
+      transactionId: paymentMethod === 'transfer' ? settlement.transactionId?.trim() || undefined : undefined,
+      customerId: customer?.id,
+      originalOrderId: original.id,
+    };
+    const exchangeItems: OrderItem[] = lines.map((line) => ({
+      ...line,
+      id: generateId(),
+      orderId: id,
+      // Empty once the product is deleted: the cloud would refuse a link to a missing product.
+      productId: line.productId && productsRef.current.some((p) => p.id === line.productId) ? line.productId : '',
+    }));
+
+    setOrders((prev) => [order, ...prev]);
+    setOrderItems((prev) => [...prev, ...exchangeItems]);
+    if (import.meta.env.VITE_SUPABASE_URL) {
+      enqueuePendingSync('order_with_items', { order, orderItems: exchangeItems });
+    }
+
+    // Returned goods go back into stock, new goods come out of it (deleted products are skipped).
+    for (const item of exchangeItems) {
+      await adjustProductStock(item.productId, -item.quantity, item.quantity < 0 ? 'Exchange return' : 'Exchange', id);
+    }
+
+    // Settled on the customer's account: what they owe goes up, or a refund takes it down.
+    const tag = `Exchange #${billNumber(id)} (bill #${billNumber(original.id)})`;
+    if (paymentMethod === 'credit' && customer && total !== 0) {
+      postOrderLedgerEntry(
+        total > 0
+          ? { customerId: customer.id, orderId: id, type: 'credit', amount: total, description: `Credit sale - ${tag}` }
+          : { customerId: customer.id, orderId: id, type: 'payment', amount: -total, description: `Credit reversal - ${tag}` }
+      );
+    }
+
+    recordOrderEditLog(
+      original.id,
+      `Exchange #${billNumber(id)}: ${describeExchange(exchangeItems, total, paymentMethod)}`,
+      original,
+      orderItems.filter((i) => i.orderId === original.id)
+    );
+
+    return order;
   };
 
   const updateSettings = async (updates: Partial<StoreSettings>) => {
@@ -2424,6 +2765,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       totalPaid: 0,
       balance: 0,
     };
+    customersRef.current = [...customersRef.current, newCustomer];
     setCustomers((prev) => [...prev, newCustomer]);
 
     if (import.meta.env.VITE_SUPABASE_URL) {
@@ -2432,28 +2774,36 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   };
 
   const updateCustomer = (id: string, updates: Partial<Customer>) => {
+    // Totals only ever change through ledger entries (see applyCustomerLedger).
+    const { id: _id, createdAt: _createdAt, totalCredit: _credit, totalPaid: _paid, balance: _balance, ...details } = updates;
     setCustomers((prev) =>
-      prev.map((c) => (c.id === id ? { ...c, ...updates } : c))
+      prev.map((c) => (c.id === id ? { ...c, ...details } : c))
     );
 
     if (import.meta.env.VITE_SUPABASE_URL) {
-      const dbUpdates: any = {};
-      if (updates.name !== undefined) dbUpdates.name = updates.name;
-      if (updates.phone !== undefined) dbUpdates.phone = updates.phone;
-      if (updates.address !== undefined) dbUpdates.address = updates.address;
-      if (updates.nic !== undefined) dbUpdates.nic = updates.nic;
-      if (updates.totalCredit !== undefined) dbUpdates.total_credit = updates.totalCredit;
-      if (updates.totalPaid !== undefined) dbUpdates.total_paid = updates.totalPaid;
-      if (updates.balance !== undefined) dbUpdates.balance = updates.balance;
+      const dbUpdates: Record<string, unknown> = {};
+      if (details.name !== undefined) dbUpdates.name = details.name;
+      if (details.phone !== undefined) dbUpdates.phone = details.phone;
+      if (details.address !== undefined) dbUpdates.address = details.address;
+      // A cleared NIC arrives as `nic: undefined` and must be cleared in the cloud too.
+      if ('nic' in details) dbUpdates.nic = details.nic?.trim() || null;
 
-      enqueuePendingSync('customer_update', { id, dbUpdates });
+      if (Object.keys(dbUpdates).length > 0) enqueuePendingSync('customer_update', { id, dbUpdates });
     }
   };
 
+  // The database also deletes the customer's ledger entries and reminders, and unlinks their bills
+  // (which keep the name printed on them), so the same happens here.
   const deleteCustomer = (id: string) => {
+    customersRef.current = customersRef.current.filter((c) => c.id !== id);
+    customerTransactionsRef.current = customerTransactionsRef.current.filter((t) => t.customerId !== id);
+    customerRemindersRef.current = customerRemindersRef.current.filter((r) => r.customerId !== id);
     setCustomers((prev) => prev.filter((c) => c.id !== id));
-    // Also delete related transactions
     setCustomerTransactions((prev) => prev.filter((t) => t.customerId !== id));
+    setCustomerReminders((prev) => prev.filter((r) => r.customerId !== id));
+    setOrders((prev) =>
+      prev.some((o) => o.customerId === id) ? prev.map((o) => (o.customerId === id ? { ...o, customerId: undefined } : o)) : prev
+    );
 
     if (import.meta.env.VITE_SUPABASE_URL) {
       enqueuePendingSync('customer_delete', { id });
@@ -2464,142 +2814,118 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return customers.find((c) => c.id === id);
   };
 
-  const addCustomerPayment = (customerId: string, amount: number, description: string, paymentMethod: 'cash' | 'card') => {
-    const createdAt = new Date().toISOString();
-    const cardFeeRate = paymentMethod === 'card' ? settings.cardFeePercent : 0;
-    const cardFeeAmount = paymentMethod === 'card' ? (amount * cardFeeRate) / 100 : 0;
-    const totalCharged = amount + cardFeeAmount;
+  // "Credit reversal ..." entries take a cancelled bill off the balance (see isCreditReversal), so a
+  // payment typed in by hand must never be worded like one.
+  const REVERSAL_WORDING_ERROR = 'A payment description can\'t start with "Credit reversal": that wording is kept for cancelled bills.';
+
+  const addCustomerPayment = (customerId: string, amount: number, description: string, paymentMethod: 'cash' | 'card'): boolean => {
+    if (!customersRef.current.some((c) => c.id === customerId)) {
+      toast.error('Customer not found');
+      return false;
+    }
+    if (!isValidAmount(amount)) {
+      toast.error('Enter an amount above 0 with at most 2 decimals');
+      return false;
+    }
+    const text = description.trim() || `${paymentMethod === 'card' ? 'Card' : 'Cash'} payment received`;
+    if (isCreditReversal({ type: 'payment', description: text })) {
+      toast.error(REVERSAL_WORDING_ERROR);
+      return false;
+    }
+    const value = Number(amount.toFixed(2));
     const transaction: CustomerTransaction = {
       id: generateId(),
       customerId,
       type: 'payment',
-      amount,
+      amount: value,
       paymentMethod,
-      cardFeeRate: cardFeeRate || undefined,
-      cardFeeAmount: cardFeeAmount || undefined,
-      totalCharged,
-      description,
-      createdAt,
+      ...customerPaymentCharges(value, paymentMethod, settings.cardFeePercent ?? 0),
+      description: text,
+      createdAt: new Date().toISOString(),
     };
+    customerTransactionsRef.current = [...customerTransactionsRef.current, transaction];
     setCustomerTransactions((prev) => [...prev, transaction]);
-    
-    // Update customer balance
-    setCustomers((prev) =>
-      prev.map((c) => {
-        if (c.id === customerId) {
-          const newTotalPaid = c.totalPaid + amount;
-          return {
-            ...c,
-            totalPaid: newTotalPaid,
-            balance: c.totalCredit - newTotalPaid,
-          };
-        }
-        return c;
-      })
-    );
+    setCustomers((prev) => prev.map((c) => (c.id === customerId ? applyCustomerLedger(c, { added: [transaction] }) : c)));
 
     if (import.meta.env.VITE_SUPABASE_URL) {
-      const customer = customers.find((c) => c.id === customerId);
-      if (customer) {
-        const newTotalPaid = customer.totalPaid + amount;
-        const newBalance = customer.totalCredit - newTotalPaid;
-
-        enqueuePendingSync('customer_payment', { transaction, customerId, newTotalPaid, newBalance });
-      }
+      // The customer's totals follow from the entry in the database.
+      enqueuePendingSync('customer_payment', { transaction });
     }
+    return true;
   };
 
-  const updateCustomerTransaction = (id: string, updates: { amount?: number; description?: string }) => {
-    const oldTransaction = customerTransactions.find((t) => t.id === id);
-    if (!oldTransaction) return;
+  /**
+   * Edits a customer ledger entry: amount, payment method, date (the calendar day; the time of day
+   * is kept) and description. Entries that belong to a bill (credit sales and their reversals) only
+   * allow the description to change: their amount follows the bill, which is edited or cancelled
+   * from POS → Manage Bills.
+   */
+  const updateCustomerTransaction = (
+    id: string,
+    updates: { amount?: number; description?: string; paymentMethod?: 'cash' | 'card'; date?: string }
+  ): boolean => {
+    const old = customerTransactionsRef.current.find((t) => t.id === id);
+    if (!old) return false;
 
-    const oldAmount = oldTransaction.amount;
-    const newAmount = updates.amount !== undefined ? updates.amount : oldAmount;
-    const amountDiff = newAmount - oldAmount;
+    if (updates.amount !== undefined && !isValidAmount(updates.amount)) {
+      toast.error('Enter an amount above 0 with at most 2 decimals');
+      return false;
+    }
+    if (updates.date !== undefined && !isValidLocalDate(updates.date)) {
+      toast.error('Enter a valid date');
+      return false;
+    }
+    if (updates.date !== undefined && updates.date > todayLocal()) {
+      toast.error("The date can't be in the future");
+      return false;
+    }
 
-    // Update the transaction
-    setCustomerTransactions((prev) =>
-      prev.map((t) => (t.id === id ? { ...t, ...updates } : t))
-    );
+    // A card payment keeps the fee rate it was taken with; switching to card uses today's rate.
+    const { next, dbUpdates } = editedCustomerTransaction(old, updates, settings.cardFeePercent ?? 0);
 
-    // Recalculate customer totals if amount changed
-    if (amountDiff !== 0) {
-      setCustomers((prev) =>
-        prev.map((c) => {
-          if (c.id !== oldTransaction.customerId) return c;
-          if (oldTransaction.type === 'payment') {
-            const newTotalPaid = c.totalPaid + amountDiff;
-            return { ...c, totalPaid: newTotalPaid, balance: c.totalCredit - newTotalPaid };
-          } else {
-            const newTotalCredit = c.totalCredit + amountDiff;
-            return { ...c, totalCredit: newTotalCredit, balance: newTotalCredit - c.totalPaid };
-          }
-        })
+    if (old.orderId && (next.amount !== old.amount || next.paymentMethod !== old.paymentMethod || next.createdAt !== old.createdAt)) {
+      toast.error(`This entry belongs to Bill #${billNumber(old.orderId)}. Edit or cancel the bill from POS → Manage Bills.`);
+      return false;
+    }
+    if (isCreditReversal(old) !== isCreditReversal(next)) {
+      toast.error(
+        isCreditReversal(old)
+          ? 'Keep "Credit reversal" at the start of this description: it is what takes the bill off the balance.'
+          : REVERSAL_WORDING_ERROR
       );
+      return false;
     }
 
-    if (import.meta.env.VITE_SUPABASE_URL) {
-      const dbUpdates: any = {};
-      if (updates.amount !== undefined) dbUpdates.amount = updates.amount;
-      if (updates.description !== undefined) dbUpdates.description = updates.description;
-
-      let customerUpdates: Record<string, unknown> | undefined;
-      if (amountDiff !== 0) {
-        const customer = customers.find((c) => c.id === oldTransaction.customerId);
-        if (customer) {
-          if (oldTransaction.type === 'payment') {
-            const newTotalPaid = customer.totalPaid + amountDiff;
-            const newBalance = customer.totalCredit - newTotalPaid;
-            customerUpdates = { total_paid: newTotalPaid, balance: newBalance };
-          } else {
-            const newTotalCredit = customer.totalCredit + amountDiff;
-            const newBalance = newTotalCredit - customer.totalPaid;
-            customerUpdates = { total_credit: newTotalCredit, balance: newBalance };
-          }
-        }
-      }
-
-      enqueuePendingSync('customer_transaction_update', { id, dbUpdates, customerId: oldTransaction.customerId, customerUpdates });
-    }
-  };
-
-  const deleteCustomerTransaction = (id: string) => {
-    const transaction = customerTransactions.find((t) => t.id === id);
-    if (!transaction) return;
-
-    setCustomerTransactions((prev) => prev.filter((t) => t.id !== id));
-
-    // Reverse the amount from customer totals
+    customerTransactionsRef.current = customerTransactionsRef.current.map((t) => (t.id === id ? next : t));
+    setCustomerTransactions((prev) => prev.map((t) => (t.id === id ? next : t)));
     setCustomers((prev) =>
-      prev.map((c) => {
-        if (c.id !== transaction.customerId) return c;
-        if (transaction.type === 'payment') {
-          const newTotalPaid = c.totalPaid - transaction.amount;
-          return { ...c, totalPaid: newTotalPaid, balance: c.totalCredit - newTotalPaid };
-        } else {
-          const newTotalCredit = c.totalCredit - transaction.amount;
-          return { ...c, totalCredit: newTotalCredit, balance: newTotalCredit - c.totalPaid };
-        }
-      })
+      prev.map((c) => (c.id === old.customerId ? applyCustomerLedger(c, { removed: [old], added: [next] }) : c))
     );
 
-    if (import.meta.env.VITE_SUPABASE_URL) {
-      const customer = customers.find((c) => c.id === transaction.customerId);
-      let customerUpdates: Record<string, unknown> | undefined;
-      if (customer) {
-        if (transaction.type === 'payment') {
-          const newTotalPaid = customer.totalPaid - transaction.amount;
-          const newBalance = customer.totalCredit - newTotalPaid;
-          customerUpdates = { total_paid: newTotalPaid, balance: newBalance };
-        } else {
-          const newTotalCredit = customer.totalCredit - transaction.amount;
-          const newBalance = newTotalCredit - customer.totalPaid;
-          customerUpdates = { total_credit: newTotalCredit, balance: newBalance };
-        }
-      }
-
-      enqueuePendingSync('customer_transaction_delete', { id, customerId: transaction.customerId, customerUpdates });
+    // The customer's totals follow from the edited entry in the database.
+    if (import.meta.env.VITE_SUPABASE_URL && Object.keys(dbUpdates).length > 0) {
+      enqueuePendingSync('customer_transaction_update', { id, dbUpdates });
     }
+    return true;
+  };
+
+  const deleteCustomerTransaction = (id: string): boolean => {
+    const old = customerTransactionsRef.current.find((t) => t.id === id);
+    if (!old) return false;
+    if (old.orderId) {
+      toast.error(`This entry belongs to Bill #${billNumber(old.orderId)}. Edit or cancel the bill from POS → Manage Bills.`);
+      return false;
+    }
+
+    customerTransactionsRef.current = customerTransactionsRef.current.filter((t) => t.id !== id);
+    setCustomerTransactions((prev) => prev.filter((t) => t.id !== id));
+    setCustomers((prev) => prev.map((c) => (c.id === old.customerId ? applyCustomerLedger(c, { removed: [old] }) : c)));
+
+    if (import.meta.env.VITE_SUPABASE_URL) {
+      // The customer's totals follow from the removed entry in the database.
+      enqueuePendingSync('customer_transaction_delete', { id, customerId: old.customerId });
+    }
+    return true;
   };
 
   const getCustomerTransactions = (customerId: string) => {
@@ -2611,42 +2937,63 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     frequency: ReminderFrequency,
     nextReminderDate: string,
     note?: string
-  ) => {
+  ): boolean => {
+    if (!customersRef.current.some((c) => c.id === customerId)) {
+      toast.error('Customer not found');
+      return false;
+    }
+    if (!isValidLocalDate(nextReminderDate)) {
+      toast.error('Choose a valid reminder date');
+      return false;
+    }
     const reminder: CustomerReminder = {
       id: generateId(),
       customerId,
       frequency,
       nextReminderDate,
       isActive: true,
-      note,
+      note: note?.trim() || undefined,
       createdAt: new Date().toISOString(),
     };
 
+    customerRemindersRef.current = [reminder, ...customerRemindersRef.current];
     setCustomerReminders((prev) => [reminder, ...prev]);
 
     if (import.meta.env.VITE_SUPABASE_URL) {
       enqueuePendingSync('customer_reminder_add', { reminder });
     }
+    return true;
   };
 
-  const updateCustomerReminder = (id: string, updates: Partial<CustomerReminder>) => {
+  const updateCustomerReminder = (id: string, updates: Partial<CustomerReminder>): boolean => {
+    if (!customerRemindersRef.current.some((r) => r.id === id)) return false;
+    if (updates.nextReminderDate !== undefined && !isValidLocalDate(updates.nextReminderDate)) {
+      toast.error('Choose a valid reminder date');
+      return false;
+    }
+    const { id: _id, customerId: _customerId, createdAt: _createdAt, ...changes } = updates;
+    if ('note' in changes) changes.note = changes.note?.trim() || undefined;
+    customerRemindersRef.current = customerRemindersRef.current.map((r) => (r.id === id ? { ...r, ...changes } : r));
     setCustomerReminders((prev) =>
-      prev.map((reminder) => (reminder.id === id ? { ...reminder, ...updates } : reminder))
+      prev.map((reminder) => (reminder.id === id ? { ...reminder, ...changes } : reminder))
     );
 
     if (import.meta.env.VITE_SUPABASE_URL) {
-      const dbUpdates: any = {};
-      if (updates.frequency !== undefined) dbUpdates.frequency = updates.frequency;
-      if (updates.nextReminderDate !== undefined) dbUpdates.next_reminder_date = updates.nextReminderDate;
-      if (updates.isActive !== undefined) dbUpdates.is_active = updates.isActive;
-      if (updates.note !== undefined) dbUpdates.note = updates.note;
-      if (updates.lastTriggeredAt !== undefined) dbUpdates.last_triggered_at = updates.lastTriggeredAt;
+      const dbUpdates: Record<string, unknown> = {};
+      if (changes.frequency !== undefined) dbUpdates.frequency = changes.frequency;
+      if (changes.nextReminderDate !== undefined) dbUpdates.next_reminder_date = changes.nextReminderDate;
+      if (changes.isActive !== undefined) dbUpdates.is_active = changes.isActive;
+      // A cleared note arrives as `note: undefined` and must be cleared in the cloud too.
+      if ('note' in changes) dbUpdates.note = changes.note ?? null;
+      if (changes.lastTriggeredAt !== undefined) dbUpdates.last_triggered_at = changes.lastTriggeredAt;
 
-      enqueuePendingSync('customer_reminder_update', { id, dbUpdates });
+      if (Object.keys(dbUpdates).length > 0) enqueuePendingSync('customer_reminder_update', { id, dbUpdates });
     }
+    return true;
   };
 
   const deleteCustomerReminder = (id: string) => {
+    customerRemindersRef.current = customerRemindersRef.current.filter((r) => r.id !== id);
     setCustomerReminders((prev) => prev.filter((reminder) => reminder.id !== id));
 
     if (import.meta.env.VITE_SUPABASE_URL) {
@@ -2664,7 +3011,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   };
 
   const markReminderTriggered = (id: string) => {
-    const reminder = customerReminders.find((r) => r.id === id);
+    const reminder = customerRemindersRef.current.find((r) => r.id === id);
     if (!reminder) return;
 
     updateCustomerReminder(id, {
@@ -2686,6 +3033,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       balance: 0,
     };
 
+    suppliersRef.current = [newSupplier, ...suppliersRef.current];
     setSuppliers((prev) => [newSupplier, ...prev]);
 
     if (import.meta.env.VITE_SUPABASE_URL) {
@@ -2694,24 +3042,28 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   };
 
   const updateSupplier = (id: string, updates: Partial<Supplier>) => {
-    setSuppliers((prev) => prev.map((s) => (s.id === id ? { ...s, ...updates } : s)));
+    // Totals only ever change through ledger entries (see applySupplierLedger).
+    const { id: _id, createdAt: _createdAt, totalPurchased: _purchased, totalPaid: _paid, balance: _balance, ...details } = updates;
+    setSuppliers((prev) => prev.map((s) => (s.id === id ? { ...s, ...details } : s)));
 
     if (import.meta.env.VITE_SUPABASE_URL) {
-      const dbUpdates: any = {};
-      if (updates.name !== undefined) dbUpdates.name = updates.name;
-      if (updates.phone !== undefined) dbUpdates.phone = updates.phone;
-      if (updates.address !== undefined) dbUpdates.address = updates.address;
-      if (updates.contactPerson !== undefined) dbUpdates.contact_person = updates.contactPerson;
-      if (updates.notes !== undefined) dbUpdates.notes = updates.notes;
-      if (updates.totalPurchased !== undefined) dbUpdates.total_purchased = updates.totalPurchased;
-      if (updates.totalPaid !== undefined) dbUpdates.total_paid = updates.totalPaid;
-      if (updates.balance !== undefined) dbUpdates.balance = updates.balance;
+      const dbUpdates: Record<string, unknown> = {};
+      if (details.name !== undefined) dbUpdates.name = details.name;
+      if (details.phone !== undefined) dbUpdates.phone = details.phone;
+      if (details.address !== undefined) dbUpdates.address = details.address;
+      // Cleared optional fields arrive as `undefined` and must be cleared in the cloud too.
+      if ('contactPerson' in details) dbUpdates.contact_person = details.contactPerson?.trim() || null;
+      if ('notes' in details) dbUpdates.notes = details.notes?.trim() || null;
 
-      enqueuePendingSync('supplier_update', { id, dbUpdates });
+      if (Object.keys(dbUpdates).length > 0) enqueuePendingSync('supplier_update', { id, dbUpdates });
     }
   };
 
+  // The database also deletes the supplier's purchases, payments and payment schedules.
   const deleteSupplier = (id: string) => {
+    suppliersRef.current = suppliersRef.current.filter((s) => s.id !== id);
+    supplierPurchasesRef.current = supplierPurchasesRef.current.filter((p) => p.supplierId !== id);
+    supplierPaymentSchedulesRef.current = supplierPaymentSchedulesRef.current.filter((s) => s.supplierId !== id);
     setSuppliers((prev) => prev.filter((s) => s.id !== id));
     setSupplierPurchases((prev) => prev.filter((p) => p.supplierId !== id));
     setSupplierPaymentSchedules((prev) => prev.filter((s) => s.supplierId !== id));
@@ -2723,176 +3075,94 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const getSupplierById = (id: string) => suppliers.find((s) => s.id === id);
 
-  const addSupplierPurchase = (purchase: Omit<SupplierPurchase, 'id' | 'createdAt'>) => {
+  // Supplier ledger amounts are signed: purchases are positive, payments to the supplier negative.
+  const isValidSupplierAmount = (amount: number) => isValidAmount(Math.abs(amount));
+
+  const addSupplierPurchase = (purchase: Omit<SupplierPurchase, 'id' | 'createdAt'>): boolean => {
+    if (!suppliersRef.current.some((s) => s.id === purchase.supplierId)) {
+      toast.error('Supplier not found');
+      return false;
+    }
+    if (!isValidSupplierAmount(purchase.amount)) {
+      toast.error('Enter an amount above 0 with at most 2 decimals');
+      return false;
+    }
+    if (!isValidLocalDate(purchase.purchaseDate)) {
+      toast.error('Enter a valid date');
+      return false;
+    }
+    const amount = Number(purchase.amount.toFixed(2));
     const newPurchase: SupplierPurchase = {
       ...purchase,
+      amount,
+      // The database requires a description.
+      description: purchase.description.trim() || (amount < 0 ? 'Payment to supplier' : 'Purchase'),
+      invoiceNumber: purchase.invoiceNumber?.trim() || undefined,
       id: generateId(),
       createdAt: new Date().toISOString(),
     };
 
+    supplierPurchasesRef.current = [newPurchase, ...supplierPurchasesRef.current];
     setSupplierPurchases((prev) => [newPurchase, ...prev]);
+    setSuppliers((prev) => prev.map((s) => (s.id === newPurchase.supplierId ? applySupplierLedger(s, { added: [newPurchase] }) : s)));
+
+    if (import.meta.env.VITE_SUPABASE_URL) {
+      // The supplier's totals follow from the entry in the database.
+      enqueuePendingSync('supplier_purchase_add', { purchase: newPurchase });
+    }
+    return true;
+  };
+
+  /**
+   * Edits a supplier ledger entry: amount (negative = payment, so flipping the sign turns a
+   * purchase into a payment), date, invoice number and description.
+   */
+  const updateSupplierPurchase = (
+    id: string,
+    updates: { amount?: number; description?: string; purchaseDate?: string; invoiceNumber?: string }
+  ): boolean => {
+    const old = supplierPurchasesRef.current.find((p) => p.id === id);
+    if (!old) return false;
+    if (updates.amount !== undefined && !isValidSupplierAmount(updates.amount)) {
+      toast.error('Enter an amount above 0 with at most 2 decimals');
+      return false;
+    }
+    if (updates.purchaseDate !== undefined && !isValidLocalDate(updates.purchaseDate)) {
+      toast.error('Enter a valid date');
+      return false;
+    }
+
+    const { next, dbUpdates } = editedSupplierPurchase(old, updates);
+    supplierPurchasesRef.current = supplierPurchasesRef.current.map((p) => (p.id === id ? next : p));
+    setSupplierPurchases((prev) => prev.map((p) => (p.id === id ? next : p)));
     setSuppliers((prev) =>
-      prev.map((s) => {
-        if (s.id !== purchase.supplierId) return s;
-        const newTotalPurchased = s.totalPurchased + purchase.amount;
-        return {
-          ...s,
-          totalPurchased: newTotalPurchased,
-          balance: newTotalPurchased - s.totalPaid,
-        };
-      })
+      prev.map((s) => (s.id === old.supplierId ? applySupplierLedger(s, { removed: [old], added: [next] }) : s))
     );
 
-    if (import.meta.env.VITE_SUPABASE_URL) {
-      const supplier = suppliers.find((s) => s.id === purchase.supplierId);
-      if (!supplier) return;
-      const newTotalPurchased = supplier.totalPurchased + purchase.amount;
-      const newBalance = newTotalPurchased - supplier.totalPaid;
-
-      enqueuePendingSync('supplier_purchase_add', {
-        purchase: newPurchase,
-        supplierId: newPurchase.supplierId,
-        newTotalPurchased,
-        newBalance,
-      });
+    // The supplier's totals follow from the edited entry in the database.
+    if (import.meta.env.VITE_SUPABASE_URL && Object.keys(dbUpdates).length > 0) {
+      enqueuePendingSync('supplier_purchase_update', { id, dbUpdates });
     }
+    return true;
   };
 
-  const updateSupplierPurchase = (id: string, updates: { amount?: number; description?: string }) => {
-    const oldPurchase = supplierPurchases.find((p) => p.id === id);
-    if (!oldPurchase) return;
+  // Deleting a "Receive stock" entry does not take the stock back out (see isStockIntakeEntry).
+  const deleteSupplierPurchase = (id: string): boolean => {
+    const old = supplierPurchasesRef.current.find((p) => p.id === id);
+    if (!old) return false;
 
-    const oldAmount = oldPurchase.amount;
-    const newAmount = updates.amount !== undefined ? updates.amount : oldAmount;
-    const amountDiff = newAmount - oldAmount;
-
-    setSupplierPurchases((prev) =>
-      prev.map((p) => (p.id === id ? { ...p, ...updates } : p))
-    );
-
-    if (amountDiff !== 0) {
-      setSuppliers((prev) =>
-        prev.map((s) => {
-          if (s.id !== oldPurchase.supplierId) return s;
-          
-          let newTotalPurchased = s.totalPurchased;
-          let newTotalPaid = s.totalPaid;
-
-          if (oldPurchase.amount < 0 && newAmount < 0) {
-            newTotalPaid = s.totalPaid - amountDiff; 
-          } else if (oldPurchase.amount >= 0 && newAmount >= 0) {
-            newTotalPurchased = s.totalPurchased + amountDiff;
-          } else {
-            if (oldPurchase.amount < 0) {
-              newTotalPaid = s.totalPaid + oldPurchase.amount; 
-            } else {
-              newTotalPurchased = s.totalPurchased - oldPurchase.amount; 
-            }
-            if (newAmount < 0) {
-              newTotalPaid = newTotalPaid - newAmount; 
-            } else {
-              newTotalPurchased = newTotalPurchased + newAmount; 
-            }
-          }
-
-          return {
-            ...s,
-            totalPurchased: newTotalPurchased,
-            totalPaid: newTotalPaid,
-            balance: newTotalPurchased - newTotalPaid,
-          };
-        })
-      );
-    }
-
-    if (import.meta.env.VITE_SUPABASE_URL) {
-      const dbUpdates: any = {};
-      if (updates.amount !== undefined) dbUpdates.amount = updates.amount;
-      if (updates.description !== undefined) dbUpdates.description = updates.description;
-
-      let supplierUpdates: Record<string, unknown> | undefined;
-      if (amountDiff !== 0) {
-        const supplier = suppliers.find((s) => s.id === oldPurchase.supplierId);
-        if (supplier) {
-          let newTotalPurchased = supplier.totalPurchased;
-          let newTotalPaid = supplier.totalPaid;
-
-          if (oldPurchase.amount < 0 && newAmount < 0) {
-            newTotalPaid = supplier.totalPaid - amountDiff; 
-          } else if (oldPurchase.amount >= 0 && newAmount >= 0) {
-            newTotalPurchased = supplier.totalPurchased + amountDiff;
-          } else {
-            if (oldPurchase.amount < 0) {
-              newTotalPaid = supplier.totalPaid + oldPurchase.amount; 
-            } else {
-              newTotalPurchased = supplier.totalPurchased - oldPurchase.amount; 
-            }
-            if (newAmount < 0) {
-              newTotalPaid = newTotalPaid - newAmount; 
-            } else {
-              newTotalPurchased = newTotalPurchased + newAmount; 
-            }
-          }
-
-          const newBalance = newTotalPurchased - newTotalPaid;
-          supplierUpdates = { total_purchased: newTotalPurchased, total_paid: newTotalPaid, balance: newBalance };
-        }
-      }
-
-      enqueuePendingSync('supplier_purchase_update', { id, dbUpdates, supplierId: oldPurchase.supplierId, supplierUpdates });
-    }
-  };
-
-  const deleteSupplierPurchase = (id: string) => {
-    const purchase = supplierPurchases.find((p) => p.id === id);
-    if (!purchase) return;
-
+    supplierPurchasesRef.current = supplierPurchasesRef.current.filter((p) => p.id !== id);
     setSupplierPurchases((prev) => prev.filter((p) => p.id !== id));
-
-    setSuppliers((prev) =>
-      prev.map((s) => {
-        if (s.id !== purchase.supplierId) return s;
-
-        let newTotalPurchased = s.totalPurchased;
-        let newTotalPaid = s.totalPaid;
-
-        if (purchase.amount < 0) {
-          newTotalPaid = s.totalPaid + purchase.amount; 
-        } else {
-          newTotalPurchased = s.totalPurchased - purchase.amount;
-        }
-
-        return {
-          ...s,
-          totalPurchased: newTotalPurchased,
-          totalPaid: newTotalPaid,
-          balance: newTotalPurchased - newTotalPaid,
-        };
-      })
-    );
+    setSuppliers((prev) => prev.map((s) => (s.id === old.supplierId ? applySupplierLedger(s, { removed: [old] }) : s)));
 
     if (import.meta.env.VITE_SUPABASE_URL) {
-      const supplier = suppliers.find((s) => s.id === purchase.supplierId);
-      let supplierUpdates: Record<string, unknown> | undefined;
-      if (supplier) {
-        let newTotalPurchased = supplier.totalPurchased;
-        let newTotalPaid = supplier.totalPaid;
-
-        if (purchase.amount < 0) {
-          newTotalPaid = supplier.totalPaid + purchase.amount; 
-        } else {
-          newTotalPurchased = supplier.totalPurchased - purchase.amount;
-        }
-        const newBalance = newTotalPurchased - newTotalPaid;
-        
-        supplierUpdates = { total_purchased: newTotalPurchased, total_paid: newTotalPaid, balance: newBalance };
-      }
-
-      enqueuePendingSync('supplier_purchase_delete', { id, supplierId: purchase.supplierId, supplierUpdates });
+      // The supplier's totals follow from the removed entry in the database.
+      enqueuePendingSync('supplier_purchase_delete', { id, supplierId: old.supplierId });
     }
+    return true;
   };
 
-  const receiveSupplierStockBatch = async (input: {
+  const receiveSupplierStockBatch = (input: {
     supplierId: string;
     items: Array<{
       productId: string;
@@ -2905,16 +3175,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     purchaseDate?: string;
     invoiceNumber?: string;
     note?: string;
-  }) => {
+  }): boolean => {
     if (!input.items || input.items.length === 0) {
       toast.error('Please add at least one product item');
-      return;
+      return false;
     }
 
-    const supplier = suppliers.find((s) => s.id === input.supplierId);
+    const supplier = suppliersRef.current.find((s) => s.id === input.supplierId);
     if (!supplier) {
       toast.error('Supplier not found');
-      return;
+      return false;
+    }
+    if (input.purchaseDate && !isValidLocalDate(input.purchaseDate)) {
+      toast.error('Enter a valid purchase date');
+      return false;
     }
 
     const purchaseDate = input.purchaseDate || todayLocal();
@@ -2937,34 +3211,36 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       const quantity = Math.floor(item.quantity);
       if (!Number.isFinite(quantity) || quantity <= 0) {
         toast.error('Each item quantity must be at least 1');
-        return;
+        return false;
       }
 
       const originalProduct = productsRef.current.find((p) => p.id === item.productId);
       if (!originalProduct) {
         toast.error('One or more products were not found');
-        return;
+        return false;
       }
 
       const resolvedUnitCost = item.unitCost !== undefined ? item.unitCost : originalProduct.costPrice;
       if (!Number.isFinite(resolvedUnitCost) || resolvedUnitCost < 0) {
         toast.error('Unit cost must be a valid non-negative number');
-        return;
+        return false;
       }
 
       const itemExpiry = item.expiryDate || originalProduct.expiryDate;
+      const newBatchSku = itemExpiry
+        ? `${originalProduct.sku}-EXP-${itemExpiry.replace(/-/g, '')}`
+        : `${originalProduct.sku}-B${Date.now().toString().slice(-4)}`;
 
-      // Find if a product with same SKU AND same Expiry exists
+      // Find if a product with same SKU AND same Expiry exists, or the batch made for that expiry
+      // last time (otherwise a second delivery would create another product with the same SKU).
       let targetProduct = productsToUpdate.find(
-        (p) => p.sku === originalProduct.sku && (p.expiryDate === itemExpiry || (!p.expiryDate && !itemExpiry))
+        (p) =>
+          (p.sku === originalProduct.sku && (p.expiryDate === itemExpiry || (!p.expiryDate && !itemExpiry))) ||
+          (!!itemExpiry && p.sku === newBatchSku)
       );
 
       if (!targetProduct) {
         // Create a new batch clone
-        const newBatchSku = itemExpiry 
-          ? `${originalProduct.sku}-EXP-${itemExpiry.replace(/-/g, '')}`
-          : `${originalProduct.sku}-B${Date.now().toString().slice(-4)}`;
-        
         targetProduct = {
           ...originalProduct,
           id: generateId(),
@@ -3001,23 +3277,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const paidAmount = Number((input.paidAmount ?? 0).toFixed(2));
     if (!Number.isFinite(paidAmount) || paidAmount < 0) {
       toast.error('Paid amount must be a valid non-negative number');
-      return;
+      return false;
     }
-    if (paidAmount > totalPurchaseAmount) {
+    if (paidAmount > Number(totalPurchaseAmount.toFixed(2))) {
       toast.error('Paid amount cannot be greater than total purchase amount');
-      return;
+      return false;
     }
-
-    const newTotalPurchased = Number((supplier.totalPurchased + totalPurchaseAmount).toFixed(2));
-    const newTotalPaid = Number((supplier.totalPaid + paidAmount).toFixed(2));
-    const newBalance = Number((newTotalPurchased - newTotalPaid).toFixed(2));
 
     const invoicePurchase: SupplierPurchase = {
       id: generateId(),
       supplierId: supplier.id,
+      // Always starts with "Stock intake" so the ledger can tell this entry also added stock.
       description:
-        input.note?.trim() ||
-        `Stock intake (${input.items.length} item${input.items.length === 1 ? '' : 's'}): ${itemSummaries.join(', ')}`,
+        `Stock intake (${input.items.length} item${input.items.length === 1 ? '' : 's'}): ${itemSummaries.join(', ')}` +
+        (input.note?.trim() ? ` - ${input.note.trim()}` : ''),
       amount: Number(totalPurchaseAmount.toFixed(2)),
       purchaseDate,
       invoiceNumber: resolvedInvoiceNumber,
@@ -3041,19 +3314,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     // Optimistic Update
     productsRef.current = productsToUpdate;
     setProducts(productsToUpdate);
+    supplierPurchasesRef.current = [...ledgerEntries, ...supplierPurchasesRef.current];
     setSupplierPurchases((prev) => [...ledgerEntries, ...prev]);
-    setSuppliers((prev) =>
-      prev.map((s) =>
-        s.id === supplier.id
-          ? {
-              ...s,
-              totalPurchased: newTotalPurchased,
-              totalPaid: newTotalPaid,
-              balance: newBalance,
-            }
-          : s
-      )
-    );
+    setSuppliers((prev) => prev.map((s) => (s.id === supplier.id ? applySupplierLedger(s, { added: ledgerEntries }) : s)));
 
     // Uploaded in the background through the sync queue.
     if (import.meta.env.VITE_SUPABASE_URL) {
@@ -3072,6 +3335,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       });
     }
     toast.success(`Stock intake saved (Invoice: ${resolvedInvoiceNumber})`);
+    return true;
   };
 
   const receiveSupplierStock = (input: {
@@ -3083,8 +3347,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     purchaseDate?: string;
     invoiceNumber?: string;
     note?: string;
-  }) => {
-    receiveSupplierStockBatch({
+  }): boolean => {
+    return receiveSupplierStockBatch({
       supplierId: input.supplierId,
       items: [
         {
@@ -3106,40 +3370,72 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const addSupplierPaymentSchedule = (
     schedule: Omit<SupplierPaymentSchedule, 'id' | 'createdAt' | 'isActive' | 'lastPaidAt'>
-  ) => {
+  ): boolean => {
+    if (!suppliersRef.current.some((s) => s.id === schedule.supplierId)) {
+      toast.error('Supplier not found');
+      return false;
+    }
+    if (!isValidAmount(schedule.amount)) {
+      toast.error('Enter an amount above 0 with at most 2 decimals');
+      return false;
+    }
+    if (!isValidLocalDate(schedule.nextPaymentDate)) {
+      toast.error('Choose a valid payment date');
+      return false;
+    }
     const newSchedule: SupplierPaymentSchedule = {
       ...schedule,
+      amount: Number(schedule.amount.toFixed(2)),
+      note: schedule.note?.trim() || undefined,
       id: generateId(),
       isActive: true,
       createdAt: new Date().toISOString(),
     };
 
+    supplierPaymentSchedulesRef.current = [newSchedule, ...supplierPaymentSchedulesRef.current];
     setSupplierPaymentSchedules((prev) => [newSchedule, ...prev]);
 
     if (import.meta.env.VITE_SUPABASE_URL) {
       enqueuePendingSync('supplier_schedule_add', { schedule: newSchedule });
     }
+    return true;
   };
 
-  const updateSupplierPaymentSchedule = (id: string, updates: Partial<SupplierPaymentSchedule>) => {
+  const updateSupplierPaymentSchedule = (id: string, updates: Partial<SupplierPaymentSchedule>): boolean => {
+    if (!supplierPaymentSchedulesRef.current.some((s) => s.id === id)) return false;
+    if (updates.amount !== undefined && !isValidAmount(updates.amount)) {
+      toast.error('Enter an amount above 0 with at most 2 decimals');
+      return false;
+    }
+    if (updates.nextPaymentDate !== undefined && !isValidLocalDate(updates.nextPaymentDate)) {
+      toast.error('Choose a valid payment date');
+      return false;
+    }
+    const { id: _id, supplierId: _supplierId, createdAt: _createdAt, ...changes } = updates;
+    if (changes.amount !== undefined) changes.amount = Number(changes.amount.toFixed(2));
+    if ('note' in changes) changes.note = changes.note?.trim() || undefined;
+    supplierPaymentSchedulesRef.current = supplierPaymentSchedulesRef.current.map((s) => (s.id === id ? { ...s, ...changes } : s));
     setSupplierPaymentSchedules((prev) =>
-      prev.map((s) => (s.id === id ? { ...s, ...updates } : s))
+      prev.map((s) => (s.id === id ? { ...s, ...changes } : s))
     );
 
     if (import.meta.env.VITE_SUPABASE_URL) {
-      const dbUpdates: any = {};
-      if (updates.frequency !== undefined) dbUpdates.frequency = updates.frequency;
-      if (updates.nextPaymentDate !== undefined) dbUpdates.next_payment_date = updates.nextPaymentDate;
-      if (updates.amount !== undefined) dbUpdates.amount = updates.amount;
-      if (updates.isActive !== undefined) dbUpdates.is_active = updates.isActive;
-      if (updates.note !== undefined) dbUpdates.note = updates.note;
-      if (updates.lastPaidAt !== undefined) dbUpdates.last_paid_at = updates.lastPaidAt;
+      const dbUpdates: Record<string, unknown> = {};
+      if (changes.frequency !== undefined) dbUpdates.frequency = changes.frequency;
+      if (changes.nextPaymentDate !== undefined) dbUpdates.next_payment_date = changes.nextPaymentDate;
+      if (changes.amount !== undefined) dbUpdates.amount = changes.amount;
+      if (changes.isActive !== undefined) dbUpdates.is_active = changes.isActive;
+      // A cleared note arrives as `note: undefined` and must be cleared in the cloud too.
+      if ('note' in changes) dbUpdates.note = changes.note ?? null;
+      if (changes.lastPaidAt !== undefined) dbUpdates.last_paid_at = changes.lastPaidAt;
 
-      enqueuePendingSync('supplier_schedule_update', { id, dbUpdates });
+      if (Object.keys(dbUpdates).length > 0) enqueuePendingSync('supplier_schedule_update', { id, dbUpdates });
     }
+    return true;
   };
 
   const deleteSupplierPaymentSchedule = (id: string) => {
+    supplierPaymentSchedulesRef.current = supplierPaymentSchedulesRef.current.filter((s) => s.id !== id);
     setSupplierPaymentSchedules((prev) => prev.filter((s) => s.id !== id));
 
     if (import.meta.env.VITE_SUPABASE_URL) {
@@ -3155,82 +3451,56 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return supplierPaymentSchedules.filter((s) => s.isActive && s.nextPaymentDate <= today);
   };
 
-  const markSupplierSchedulePaid = (id: string) => {
-    const schedule = supplierPaymentSchedules.find((s) => s.id === id);
-    if (!schedule) return;
+  /** Records the scheduled amount as a payment to the supplier (dated today) and moves the schedule on. */
+  const markSupplierSchedulePaid = (id: string): boolean => {
+    const schedule = supplierPaymentSchedulesRef.current.find((s) => s.id === id);
+    if (!schedule) return false;
+    const supplier = suppliersRef.current.find((s) => s.id === schedule.supplierId);
+    if (!supplier) {
+      toast.error('Supplier not found');
+      return false;
+    }
+    if (!isValidAmount(schedule.amount)) {
+      toast.error('Set an amount for this schedule first');
+      return false;
+    }
 
-    const supplier = suppliers.find((s) => s.id === schedule.supplierId);
-    if (supplier) {
-      const newTotalPaid = supplier.totalPaid + schedule.amount;
-      const newBalance = supplier.totalPurchased - newTotalPaid;
+    const createdAt = new Date().toISOString();
+    const paymentEntry: SupplierPurchase = {
+      id: generateId(),
+      supplierId: supplier.id,
+      description: schedule.note?.trim() || `Payment received (schedule: ${schedule.frequency})`,
+      amount: Number((-schedule.amount).toFixed(2)),
+      purchaseDate: todayLocal(),
+      createdAt,
+    };
 
-      const createdAt = new Date().toISOString();
-      const paymentDate = createdAt.slice(0, 10);
-      const paymentEntry: SupplierPurchase = {
-        id: generateId(),
-        supplierId: supplier.id,
-        description: schedule.note?.trim() || `Payment received (schedule: ${schedule.frequency})`,
-        amount: Number((-schedule.amount).toFixed(2)),
-        purchaseDate: paymentDate,
-        createdAt,
-      };
+    supplierPurchasesRef.current = [paymentEntry, ...supplierPurchasesRef.current];
+    setSupplierPurchases((prev) => [paymentEntry, ...prev]);
+    setSuppliers((prev) => prev.map((s) => (s.id === supplier.id ? applySupplierLedger(s, { added: [paymentEntry] }) : s)));
 
-      setSupplierPurchases((prev) => [paymentEntry, ...prev]);
-
-      updateSupplier(supplier.id, {
-        totalPaid: newTotalPaid,
-        balance: newBalance,
-      });
-
-      if (import.meta.env.VITE_SUPABASE_URL) {
-        enqueuePendingSync('supplier_payment_add', { purchase: paymentEntry });
-      }
+    if (import.meta.env.VITE_SUPABASE_URL) {
+      // The supplier's totals follow from the entry in the database.
+      enqueuePendingSync('supplier_payment_add', { purchase: paymentEntry });
     }
 
     updateSupplierPaymentSchedule(id, {
-      lastPaidAt: new Date().toISOString(),
+      lastPaidAt: createdAt,
       nextPaymentDate: calculateNextScheduleDate(schedule.nextPaymentDate, schedule.frequency),
     });
+    return true;
   };
 
-  // Helper to add credit transaction when creating credit order
+  // Helper to add credit transaction when creating credit order. (Always uploaded: it used to be
+  // skipped when the customer was not in this render's list, e.g. one added a moment before.)
   const addCreditTransaction = async (customerId: string, orderId: string, amount: number) => {
-    const createdAt = new Date().toISOString();
-    const transaction: CustomerTransaction = {
-      id: generateId(),
+    postOrderLedgerEntry({
       customerId,
       orderId,
       type: 'credit',
       amount,
-      description: `Credit sale - Order #${orderId.slice(-8).toUpperCase()}`,
-      createdAt,
-    };
-    setCustomerTransactions((prev) => [...prev, transaction]);
-    
-    // Update customer balance
-    setCustomers((prev) =>
-      prev.map((c) => {
-        if (c.id === customerId) {
-          const newTotalCredit = c.totalCredit + amount;
-          return {
-            ...c,
-            totalCredit: newTotalCredit,
-            balance: newTotalCredit - c.totalPaid,
-          };
-        }
-        return c;
-      })
-    );
-
-    if (import.meta.env.VITE_SUPABASE_URL) {
-      const customer = customers.find((c) => c.id === customerId);
-      if (!customer) return;
-
-      const newTotalCredit = customer.totalCredit + amount;
-      const newBalance = newTotalCredit - customer.totalPaid;
-
-      enqueuePendingSync('customer_credit', { transaction, customerId, newTotalCredit, newBalance });
-    }
+      description: `Credit sale - Order #${billNumber(orderId)}`,
+    });
   };
 
   const manualSync = useCallback(async () => {
@@ -3345,6 +3615,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         updateOrder,
         updateOrderFull,
         cancelOrder,
+        createExchange,
         getOrderItems,
         getOrderEditLogs,
         getCustomerOrders,

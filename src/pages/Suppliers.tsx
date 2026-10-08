@@ -1,7 +1,9 @@
 import { todayLocal } from '@/lib/dates';
+import { applySupplierLedger, isStockIntakeEntry, parseAmount } from '@/lib/ledger';
+import { escapeHtml } from '@/lib/orderMath';
 import { useMemo, useState } from 'react';
 import { useStore } from '@/contexts/useStore';
-import { Supplier, ScheduleFrequency, SupplierPurchase } from '@/types/pos';
+import { Supplier, ScheduleFrequency, SupplierPaymentSchedule, SupplierPurchase } from '@/types/pos';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -32,6 +34,17 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import { Switch } from '@/components/ui/switch';
 import { toast } from 'sonner';
 import { Building2, Plus, ReceiptText, CalendarClock, CalendarDays, Wrench, CheckCircle2, Printer, Trash2, Edit2 } from 'lucide-react';
 
@@ -53,7 +66,9 @@ export default function Suppliers() {
     deleteSupplierPurchase,
     getSupplierPurchases,
     addSupplierPaymentSchedule,
+    updateSupplierPaymentSchedule,
     deleteSupplierPaymentSchedule,
+    getSupplierPaymentSchedules,
     getDueSupplierPaymentSchedules,
     markSupplierSchedulePaid,
     settings,
@@ -72,7 +87,26 @@ export default function Suppliers() {
   const [editingSupplier, setEditingSupplier] = useState<Supplier | null>(null);
 
   const [editingLedgerEntry, setEditingLedgerEntry] = useState<SupplierPurchase | null>(null);
-  const [ledgerEditForm, setLedgerEditForm] = useState({ amount: '', description: '', isPayment: false });
+  const [ledgerEditForm, setLedgerEditForm] = useState({
+    amount: '',
+    description: '',
+    isPayment: false,
+    purchaseDate: '',
+    invoiceNumber: '',
+  });
+  const [deletingLedgerEntry, setDeletingLedgerEntry] = useState<SupplierPurchase | null>(null);
+  const [deletingSupplierId, setDeletingSupplierId] = useState<string | null>(null);
+
+  const [editingSchedule, setEditingSchedule] = useState<SupplierPaymentSchedule | null>(null);
+  const [scheduleEditForm, setScheduleEditForm] = useState({
+    frequency: 'monthly' as ScheduleFrequency,
+    nextPaymentDate: '',
+    amount: '',
+    note: '',
+    isActive: true,
+  });
+  const [payingScheduleId, setPayingScheduleId] = useState<string | null>(null);
+  const [deletingScheduleId, setDeletingScheduleId] = useState<string | null>(null);
 
   const [supplierForm, setSupplierForm] = useState({
     name: '',
@@ -84,6 +118,7 @@ export default function Suppliers() {
 
   const [purchaseForm, setPurchaseForm] = useState({
     supplierId: '',
+    entryType: 'purchase' as 'purchase' | 'payment',
     description: '',
     amount: '',
     purchaseDate: todayLocal(),
@@ -175,23 +210,35 @@ export default function Suppliers() {
   };
 
   const submitPurchase = () => {
-    const amount = parseFloat(purchaseForm.amount);
-    if (!purchaseForm.supplierId || !purchaseForm.description.trim() || isNaN(amount) || amount <= 0) {
-      toast.error('Supplier, description and valid amount are required');
+    const amount = parseAmount(purchaseForm.amount);
+    const isPayment = purchaseForm.entryType === 'payment';
+    if (!purchaseForm.supplierId || (!isPayment && !purchaseForm.description.trim()) || amount === null) {
+      toast.error(
+        isPayment
+          ? 'Supplier and a valid amount (above 0, at most 2 decimals) are required'
+          : 'Supplier, description and a valid amount (above 0, at most 2 decimals) are required'
+      );
+      return;
+    }
+    if (!purchaseForm.purchaseDate) {
+      toast.error('Choose a date');
       return;
     }
 
-    addSupplierPurchase({
+    const saved = addSupplierPurchase({
       supplierId: purchaseForm.supplierId,
-      description: purchaseForm.description.trim(),
-      amount,
+      description: purchaseForm.description.trim() || (isPayment ? 'Payment to supplier' : ''),
+      // Payments to the supplier are stored as negative amounts.
+      amount: isPayment ? -amount : amount,
       purchaseDate: purchaseForm.purchaseDate,
       invoiceNumber: purchaseForm.invoiceNumber.trim() || undefined,
     });
+    if (!saved) return;
 
-    toast.success('Purchase entry recorded');
+    toast.success(isPayment ? 'Payment recorded' : 'Purchase entry recorded');
     setPurchaseForm({
       supplierId: purchaseForm.supplierId,
+      entryType: purchaseForm.entryType,
       description: '',
       amount: '',
       purchaseDate: todayLocal(),
@@ -200,19 +247,20 @@ export default function Suppliers() {
   };
 
   const submitSchedule = () => {
-    const amount = parseFloat(scheduleForm.amount);
-    if (!scheduleForm.supplierId || isNaN(amount) || amount <= 0) {
-      toast.error('Supplier and valid schedule amount are required');
+    const amount = parseAmount(scheduleForm.amount);
+    if (!scheduleForm.supplierId || amount === null) {
+      toast.error('Supplier and a valid schedule amount (above 0, at most 2 decimals) are required');
       return;
     }
 
-    addSupplierPaymentSchedule({
+    const saved = addSupplierPaymentSchedule({
       supplierId: scheduleForm.supplierId,
       frequency: scheduleForm.frequency,
       nextPaymentDate: scheduleForm.nextPaymentDate,
       amount,
       note: scheduleForm.note.trim() || undefined,
     });
+    if (!saved) return;
 
     toast.success('Payment schedule added');
     setScheduleForm({
@@ -230,33 +278,123 @@ export default function Suppliers() {
       amount: Math.abs(purchase.amount).toString(),
       description: purchase.description,
       isPayment: purchase.amount < 0,
+      purchaseDate: purchase.purchaseDate,
+      invoiceNumber: purchase.invoiceNumber || '',
     });
   };
 
   const submitLedgerEdit = () => {
     if (!editingLedgerEntry) return;
-    const amount = parseFloat(ledgerEditForm.amount);
-    if (isNaN(amount) || amount <= 0) {
-      toast.error('Valid positive amount is required');
+    const amount = parseAmount(ledgerEditForm.amount);
+    if (amount === null) {
+      toast.error('Enter an amount above 0 with at most 2 decimals');
+      return;
+    }
+    if (!ledgerEditForm.purchaseDate) {
+      toast.error('Choose a date');
       return;
     }
 
-    const finalAmount = ledgerEditForm.isPayment ? -amount : amount;
-
-    updateSupplierPurchase(editingLedgerEntry.id, {
-      amount: finalAmount,
-      description: ledgerEditForm.description.trim() || undefined,
+    const saved = updateSupplierPurchase(editingLedgerEntry.id, {
+      amount: ledgerEditForm.isPayment ? -amount : amount,
+      // An empty description keeps the old one: the database requires one.
+      description: ledgerEditForm.description,
+      purchaseDate: ledgerEditForm.purchaseDate,
+      invoiceNumber: ledgerEditForm.invoiceNumber,
     });
+    if (!saved) return;
 
     toast.success('Ledger entry updated');
     setEditingLedgerEntry(null);
   };
 
-  const handleDeleteLedgerEntry = (id: string) => {
-    if (window.confirm('Are you sure you want to delete this ledger entry?')) {
-      deleteSupplierPurchase(id);
-      toast.success('Ledger entry deleted');
+  const handleDeleteLedgerEntry = () => {
+    if (!deletingLedgerEntry) return;
+    if (deleteSupplierPurchase(deletingLedgerEntry.id)) toast.success('Ledger entry deleted');
+    setDeletingLedgerEntry(null);
+  };
+
+  // Balance effects shown in the confirmations (same rules as the database).
+  const deletingEntrySupplier = deletingLedgerEntry ? getSupplierById(deletingLedgerEntry.supplierId) : undefined;
+  const balanceAfterEntryDelete =
+    deletingLedgerEntry && deletingEntrySupplier
+      ? applySupplierLedger(deletingEntrySupplier, { removed: [deletingLedgerEntry] }).balance
+      : null;
+
+  const editingEntrySupplier = editingLedgerEntry ? getSupplierById(editingLedgerEntry.supplierId) : undefined;
+  const editAmount = parseAmount(ledgerEditForm.amount);
+  const balanceAfterEntryEdit =
+    editingLedgerEntry && editingEntrySupplier && editAmount !== null
+      ? applySupplierLedger(editingEntrySupplier, {
+          removed: [editingLedgerEntry],
+          added: [{ amount: ledgerEditForm.isPayment ? -editAmount : editAmount }],
+        }).balance
+      : null;
+
+  const deletingSupplier = deletingSupplierId ? getSupplierById(deletingSupplierId) : undefined;
+  const confirmDeleteSupplier = () => {
+    if (!deletingSupplier) return;
+    deleteSupplier(deletingSupplier.id);
+    if (selectedSupplierId === deletingSupplier.id) setSelectedSupplierId('');
+    toast.success('Supplier deleted');
+    setDeletingSupplierId(null);
+  };
+
+  // Payment schedules
+  const openEditSchedule = (schedule: SupplierPaymentSchedule) => {
+    setEditingSchedule(schedule);
+    setScheduleEditForm({
+      frequency: schedule.frequency,
+      nextPaymentDate: schedule.nextPaymentDate,
+      amount: String(schedule.amount),
+      note: schedule.note || '',
+      isActive: schedule.isActive,
+    });
+  };
+
+  const submitScheduleEdit = () => {
+    if (!editingSchedule) return;
+    const amount = parseAmount(scheduleEditForm.amount);
+    if (amount === null) {
+      toast.error('Enter an amount above 0 with at most 2 decimals');
+      return;
     }
+    if (!scheduleEditForm.nextPaymentDate) {
+      toast.error('Choose the next payment date');
+      return;
+    }
+    const saved = updateSupplierPaymentSchedule(editingSchedule.id, {
+      frequency: scheduleEditForm.frequency,
+      nextPaymentDate: scheduleEditForm.nextPaymentDate,
+      amount,
+      note: scheduleEditForm.note.trim() || undefined,
+      isActive: scheduleEditForm.isActive,
+    });
+    if (!saved) return;
+    toast.success('Payment schedule updated');
+    setEditingSchedule(null);
+  };
+
+  const payingSchedule = payingScheduleId ? supplierPaymentSchedules.find((s) => s.id === payingScheduleId) : undefined;
+  const payingSupplier = payingSchedule ? getSupplierById(payingSchedule.supplierId) : undefined;
+  const balanceAfterSchedulePayment =
+    payingSchedule && payingSupplier
+      ? applySupplierLedger(payingSupplier, { added: [{ amount: -payingSchedule.amount }] }).balance
+      : null;
+  const confirmSchedulePaid = () => {
+    if (payingSchedule && markSupplierSchedulePaid(payingSchedule.id)) {
+      toast.success(`Payment of ${formatPKR(payingSchedule.amount)} recorded in the ledger`);
+    }
+    setPayingScheduleId(null);
+  };
+
+  const deletingSchedule = deletingScheduleId ? supplierPaymentSchedules.find((s) => s.id === deletingScheduleId) : undefined;
+  const confirmDeleteSchedule = () => {
+    if (deletingSchedule) {
+      deleteSupplierPaymentSchedule(deletingSchedule.id);
+      toast.success('Payment schedule deleted');
+    }
+    setDeletingScheduleId(null);
   };
 
   const runHealthCheck = () => {
@@ -326,7 +464,7 @@ export default function Suppliers() {
       printWindow.document.write(`
         <html>
           <head>
-            <title>Supplier Ledger${supplier ? ` - ${supplier.name}` : ''}</title>
+            <title>Supplier Ledger${supplier ? ` - ${escapeHtml(supplier.name)}` : ''}</title>
             <style>
               @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
@@ -558,10 +696,10 @@ export default function Suppliers() {
           <body>
             <!-- Header -->
             <div class="receipt-header">
-              <div class="store-name">${settings.storeName}</div>
+              <div class="store-name">${escapeHtml(settings.storeName)}</div>
               <div class="store-details">
-                ${settings.address}<br/>
-                Tel: ${settings.phone}
+                ${escapeHtml(settings.address)}<br/>
+                Tel: ${escapeHtml(settings.phone)}
               </div>
             </div>
 
@@ -573,20 +711,20 @@ export default function Suppliers() {
               <div class="supplier-info">
                 <div class="info-row">
                   <span class="label">Supplier:</span>
-                  <span class="value">${supplier.name}</span>
+                  <span class="value">${escapeHtml(supplier.name)}</span>
                 </div>
                 <div class="info-row">
                   <span class="label">Phone:</span>
-                  <span class="value">${supplier.phone}</span>
+                  <span class="value">${escapeHtml(supplier.phone)}</span>
                 </div>
                 ${supplier.contactPerson ? `
                 <div class="info-row">
                   <span class="label">Contact:</span>
-                  <span class="value">${supplier.contactPerson}</span>
+                  <span class="value">${escapeHtml(supplier.contactPerson)}</span>
                 </div>` : ''}
                 <div class="info-row">
                   <span class="label">Address:</span>
-                  <span class="value">${supplier.address}</span>
+                  <span class="value">${escapeHtml(supplier.address)}</span>
                 </div>
               </div>
             ` : `
@@ -608,17 +746,17 @@ export default function Suppliers() {
                   year: 'numeric',
                 });
                 const isPayment = purchase.amount < 0;
-                const supplierName = getSupplierById(purchase.supplierId)?.name || 'Unknown';
+                const supplierName = escapeHtml(getSupplierById(purchase.supplierId)?.name || 'Unknown');
                 return `
                   <div class="transaction-item">
                     <div class="txn-top-row">
                       <span class="txn-type ${isPayment ? 'payment' : 'purchase'}">${isPayment ? '▼ Payment' : '▲ Purchase'}</span>
                       <span class="txn-amount">${isPayment ? '-' : '+'} Rs. ${Math.abs(purchase.amount).toLocaleString()}</span>
                     </div>
-                    <div class="txn-desc">${purchase.description}</div>
+                    <div class="txn-desc">${escapeHtml(purchase.description)}</div>
                     <div class="txn-meta">
                       <span>${date}</span>
-                      <span>${!supplier ? supplierName : ''}${purchase.invoiceNumber ? `${!supplier ? ' | ' : ''}Inv: ${purchase.invoiceNumber}` : ''}</span>
+                      <span>${!supplier ? supplierName : ''}${purchase.invoiceNumber ? `${!supplier ? ' | ' : ''}Inv: ${escapeHtml(purchase.invoiceNumber)}` : ''}</span>
                     </div>
                   </div>
                 `;
@@ -692,7 +830,7 @@ export default function Suppliers() {
                       {schedule.frequency.toUpperCase()} - Due {schedule.nextPaymentDate} - {formatPKR(schedule.amount)}
                     </p>
                   </div>
-                  <Button size="sm" onClick={() => markSupplierSchedulePaid(schedule.id)}>
+                  <Button size="sm" onClick={() => setPayingScheduleId(schedule.id)}>
                     Mark Paid
                   </Button>
                 </div>
@@ -761,7 +899,7 @@ export default function Suppliers() {
                           </TableCell>
                           <TableCell className="text-right space-x-2">
                             <Button size="sm" variant="outline" onClick={() => openEditSupplier(supplier)}>Edit</Button>
-                            <Button size="sm" variant="destructive" onClick={() => deleteSupplier(supplier.id)}>Delete</Button>
+                            <Button size="sm" variant="destructive" onClick={() => setDeletingSupplierId(supplier.id)}>Delete</Button>
                           </TableCell>
                         </TableRow>
                       ))
@@ -776,7 +914,11 @@ export default function Suppliers() {
         <TabsContent value="purchases" className="space-y-4">
           <Card>
             <CardHeader>
-              <CardTitle className="flex items-center gap-2"><ReceiptText className="h-5 w-5" /> Add Purchase Entry</CardTitle>
+              <CardTitle className="flex items-center gap-2"><ReceiptText className="h-5 w-5" /> Add Purchase or Payment</CardTitle>
+              <CardDescription>
+                A purchase adds to what you owe the supplier; a payment to the supplier takes it off. Stock is received
+                from Inventory → Receive Supplier Stock.
+              </CardDescription>
             </CardHeader>
             <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-2">
@@ -793,23 +935,42 @@ export default function Suppliers() {
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label>Amount</Label>
-                <Input type="number" value={purchaseForm.amount} onChange={(e) => setPurchaseForm({ ...purchaseForm, amount: e.target.value })} />
-              </div>
-              <div className="space-y-2 md:col-span-2">
-                <Label>Description</Label>
-                <Input value={purchaseForm.description} onChange={(e) => setPurchaseForm({ ...purchaseForm, description: e.target.value })} placeholder="e.g., Weekly grocery stock" />
+                <Label>Entry Type</Label>
+                <Select
+                  value={purchaseForm.entryType}
+                  onValueChange={(value) => setPurchaseForm({ ...purchaseForm, entryType: value as 'purchase' | 'payment' })}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="purchase">Purchase (invoice)</SelectItem>
+                    <SelectItem value="payment">Payment to supplier</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
               <div className="space-y-2">
-                <Label>Purchase Date</Label>
+                <Label>Amount</Label>
+                <Input type="number" min="0" step="0.01" value={purchaseForm.amount} onChange={(e) => setPurchaseForm({ ...purchaseForm, amount: e.target.value })} />
+              </div>
+              <div className="space-y-2">
+                <Label>{purchaseForm.entryType === 'payment' ? 'Payment Date' : 'Purchase Date'}</Label>
                 <Input type="date" value={purchaseForm.purchaseDate} onChange={(e) => setPurchaseForm({ ...purchaseForm, purchaseDate: e.target.value })} />
+              </div>
+              <div className="space-y-2">
+                <Label>Description{purchaseForm.entryType === 'payment' ? ' (optional)' : ''}</Label>
+                <Input
+                  value={purchaseForm.description}
+                  onChange={(e) => setPurchaseForm({ ...purchaseForm, description: e.target.value })}
+                  placeholder={purchaseForm.entryType === 'payment' ? 'e.g., Cash paid to salesman' : 'e.g., Weekly grocery stock'}
+                />
               </div>
               <div className="space-y-2">
                 <Label>Invoice Number</Label>
                 <Input value={purchaseForm.invoiceNumber} onChange={(e) => setPurchaseForm({ ...purchaseForm, invoiceNumber: e.target.value })} />
               </div>
               <div className="md:col-span-2">
-                <Button onClick={submitPurchase}>Save Purchase</Button>
+                <Button onClick={submitPurchase}>{purchaseForm.entryType === 'payment' ? 'Save Payment' : 'Save Purchase'}</Button>
               </div>
             </CardContent>
           </Card>
@@ -874,10 +1035,10 @@ export default function Suppliers() {
                         <TableCell>{purchase.invoiceNumber || '-'}</TableCell>
                         <TableCell className="text-right">{formatPKR(Math.abs(purchase.amount))}</TableCell>
                         <TableCell className="text-right space-x-2">
-                          <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => openEditLedgerEntry(purchase)}>
+                          <Button size="icon" variant="ghost" className="h-8 w-8" title="Edit entry" onClick={() => openEditLedgerEntry(purchase)}>
                             <Edit2 className="h-4 w-4" />
                           </Button>
-                          <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" onClick={() => handleDeleteLedgerEntry(purchase.id)}>
+                          <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" title="Delete entry" onClick={() => setDeletingLedgerEntry(purchase)}>
                             <Trash2 className="h-4 w-4" />
                           </Button>
                         </TableCell>
@@ -929,7 +1090,7 @@ export default function Suppliers() {
               </div>
               <div className="space-y-2">
                 <Label>Amount</Label>
-                <Input type="number" value={scheduleForm.amount} onChange={(e) => setScheduleForm({ ...scheduleForm, amount: e.target.value })} />
+                <Input type="number" min="0" step="0.01" value={scheduleForm.amount} onChange={(e) => setScheduleForm({ ...scheduleForm, amount: e.target.value })} />
               </div>
               <div className="space-y-2 md:col-span-2">
                 <Label>Note</Label>
@@ -943,7 +1104,7 @@ export default function Suppliers() {
 
           <Card>
             <CardHeader>
-              <CardTitle>Active Schedules</CardTitle>
+              <CardTitle>Payment Schedules</CardTitle>
             </CardHeader>
             <CardContent className="space-y-2">
             {supplierPaymentSchedules.length === 0 ? (
@@ -952,14 +1113,20 @@ export default function Suppliers() {
                 supplierPaymentSchedules.map((schedule) => (
                   <div key={schedule.id} className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 p-3 border border-border/40 bg-muted/20 rounded-md">
                     <div>
-                      <p className="font-medium text-foreground">{getSupplierById(schedule.supplierId)?.name || 'Unknown Supplier'}</p>
+                      <p className="font-medium text-foreground">
+                        {getSupplierById(schedule.supplierId)?.name || 'Unknown Supplier'}
+                        {!schedule.isActive && <Badge variant="secondary" className="ml-2">Paused</Badge>}
+                      </p>
                       <p className="text-xs text-muted-foreground">
                         {schedule.frequency.toUpperCase()} | Next: {schedule.nextPaymentDate} | Amount: {formatPKR(schedule.amount)}
+                        {schedule.lastPaidAt ? ` | Last paid: ${new Date(schedule.lastPaidAt).toLocaleDateString()}` : ''}
                       </p>
+                      {schedule.note && <p className="text-xs text-foreground/80 mt-1">{schedule.note}</p>}
                     </div>
                     <div className="flex gap-2">
-                      <Button size="sm" onClick={() => markSupplierSchedulePaid(schedule.id)}>Mark Paid</Button>
-                      <Button size="sm" variant="destructive" onClick={() => deleteSupplierPaymentSchedule(schedule.id)}>Delete</Button>
+                      <Button size="sm" onClick={() => setPayingScheduleId(schedule.id)}>Mark Paid</Button>
+                      <Button size="sm" variant="outline" onClick={() => openEditSchedule(schedule)}>Edit</Button>
+                      <Button size="sm" variant="destructive" onClick={() => setDeletingScheduleId(schedule.id)}>Delete</Button>
                     </div>
                   </div>
                 ))
@@ -1096,15 +1263,57 @@ export default function Suppliers() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Edit Ledger Entry</DialogTitle>
-            <DialogDescription>Update the amount and description for this entry.</DialogDescription>
+            <DialogDescription>
+              {editingEntrySupplier ? `${editingEntrySupplier.name}: ` : ''}update the type, amount, date, invoice number or description.
+            </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label>Entry Type</Label>
-              <div className="flex items-center space-x-2">
-                <Badge variant={ledgerEditForm.isPayment ? 'secondary' : 'outline'}>
-                  {ledgerEditForm.isPayment ? 'Payment' : 'Purchase'}
-                </Badge>
+            {editingLedgerEntry && isStockIntakeEntry(editingLedgerEntry) && (
+              <div className="p-3 rounded-md border border-amber-500/30 bg-amber-500/10 text-sm">
+                This entry was made by Receive Supplier Stock. Changing it only changes the supplier's balance; the stock
+                that was received stays as it is (adjust it in Inventory if needed).
+              </div>
+            )}
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>Entry Type</Label>
+                <Select
+                  value={ledgerEditForm.isPayment ? 'payment' : 'purchase'}
+                  onValueChange={(value) => setLedgerEditForm({ ...ledgerEditForm, isPayment: value === 'payment' })}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="purchase">Purchase (invoice)</SelectItem>
+                    <SelectItem value="payment">Payment to supplier</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Amount</Label>
+                <Input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={ledgerEditForm.amount}
+                  onChange={(e) => setLedgerEditForm({ ...ledgerEditForm, amount: e.target.value })}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Date</Label>
+                <Input
+                  type="date"
+                  value={ledgerEditForm.purchaseDate}
+                  onChange={(e) => setLedgerEditForm({ ...ledgerEditForm, purchaseDate: e.target.value })}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Invoice Number</Label>
+                <Input
+                  value={ledgerEditForm.invoiceNumber}
+                  onChange={(e) => setLedgerEditForm({ ...ledgerEditForm, invoiceNumber: e.target.value })}
+                />
               </div>
             </div>
             <div className="space-y-2">
@@ -1114,14 +1323,12 @@ export default function Suppliers() {
                 onChange={(e) => setLedgerEditForm({ ...ledgerEditForm, description: e.target.value })}
               />
             </div>
-            <div className="space-y-2">
-              <Label>Amount</Label>
-              <Input
-                type="number"
-                value={ledgerEditForm.amount}
-                onChange={(e) => setLedgerEditForm({ ...ledgerEditForm, amount: e.target.value })}
-              />
-            </div>
+            {editingEntrySupplier && balanceAfterEntryEdit !== null && (
+              <p className="text-sm text-muted-foreground">
+                Balance with {editingEntrySupplier.name}: {formatPKR(editingEntrySupplier.balance)} →{' '}
+                <span className="font-medium text-foreground">{formatPKR(balanceAfterEntryEdit)}</span>
+              </p>
+            )}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setEditingLedgerEntry(null)}>Cancel</Button>
@@ -1129,6 +1336,203 @@ export default function Suppliers() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Delete ledger entry */}
+      <AlertDialog open={!!deletingLedgerEntry} onOpenChange={(open) => !open && setDeletingLedgerEntry(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Ledger Entry</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2">
+                {deletingLedgerEntry && (
+                  <p>
+                    Delete the {deletingLedgerEntry.amount < 0 ? 'payment' : 'purchase'} of{' '}
+                    <span className="font-medium text-foreground">{formatPKR(Math.abs(deletingLedgerEntry.amount))}</span>
+                    {deletingLedgerEntry.invoiceNumber ? ` (invoice ${deletingLedgerEntry.invoiceNumber})` : ''}?
+                  </p>
+                )}
+                {deletingEntrySupplier && balanceAfterEntryDelete !== null && (
+                  <p>
+                    Balance with {deletingEntrySupplier.name} goes from{' '}
+                    <span className="font-medium text-foreground">{formatPKR(deletingEntrySupplier.balance)}</span> to{' '}
+                    <span className="font-medium text-foreground">{formatPKR(balanceAfterEntryDelete)}</span>.
+                  </p>
+                )}
+                {deletingLedgerEntry && isStockIntakeEntry(deletingLedgerEntry) && (
+                  <p className="text-amber-600">
+                    This entry was made by Receive Supplier Stock. Deleting it does not remove the stock that was
+                    received; adjust stock in Inventory if needed.
+                  </p>
+                )}
+                <p>This action cannot be undone.</p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleDeleteLedgerEntry} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Delete supplier */}
+      <AlertDialog open={!!deletingSupplier} onOpenChange={(open) => !open && setDeletingSupplierId(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Supplier</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2">
+                <p>Are you sure you want to delete "{deletingSupplier?.name}"?</p>
+                {deletingSupplier && deletingSupplier.balance !== 0 && (
+                  <p className="font-medium text-destructive">
+                    {deletingSupplier.balance > 0
+                      ? `You still owe this supplier ${formatPKR(deletingSupplier.balance)}. That balance will no longer be tracked anywhere.`
+                      : `This supplier holds ${formatPKR(-deletingSupplier.balance)} paid in advance. That will no longer be tracked anywhere.`}
+                  </p>
+                )}
+                {deletingSupplier && (
+                  <p>
+                    All their purchases and payments ({getSupplierPurchases(deletingSupplier.id).length} ledger entries)
+                    and payment schedules ({getSupplierPaymentSchedules(deletingSupplier.id).length}) will be deleted too.
+                    Stock already received stays in Inventory. This action cannot be undone.
+                  </p>
+                )}
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmDeleteSupplier} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Edit payment schedule */}
+      <Dialog open={!!editingSchedule} onOpenChange={(open) => !open && setEditingSchedule(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit Payment Schedule</DialogTitle>
+            <DialogDescription>
+              {editingSchedule ? getSupplierById(editingSchedule.supplierId)?.name || 'Unknown Supplier' : ''}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid grid-cols-2 gap-3 py-2">
+            <div className="space-y-2">
+              <Label>Frequency</Label>
+              <Select
+                value={scheduleEditForm.frequency}
+                onValueChange={(value) => setScheduleEditForm({ ...scheduleEditForm, frequency: value as ScheduleFrequency })}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="daily">Daily</SelectItem>
+                  <SelectItem value="weekly">Weekly</SelectItem>
+                  <SelectItem value="monthly">Monthly</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Amount</Label>
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                value={scheduleEditForm.amount}
+                onChange={(e) => setScheduleEditForm({ ...scheduleEditForm, amount: e.target.value })}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Next Payment Date</Label>
+              <Input
+                type="date"
+                value={scheduleEditForm.nextPaymentDate}
+                onChange={(e) => setScheduleEditForm({ ...scheduleEditForm, nextPaymentDate: e.target.value })}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Active</Label>
+              <div className="flex items-center gap-2 h-10">
+                <Switch
+                  checked={scheduleEditForm.isActive}
+                  onCheckedChange={(checked) => setScheduleEditForm({ ...scheduleEditForm, isActive: checked })}
+                />
+                <span className="text-sm text-muted-foreground">{scheduleEditForm.isActive ? 'Shows when due' : 'Paused'}</span>
+              </div>
+            </div>
+            <div className="space-y-2 col-span-2">
+              <Label>Note</Label>
+              <Textarea
+                value={scheduleEditForm.note}
+                onChange={(e) => setScheduleEditForm({ ...scheduleEditForm, note: e.target.value })}
+                rows={2}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditingSchedule(null)}>Cancel</Button>
+            <Button onClick={submitScheduleEdit}>Save Changes</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Mark scheduled payment as paid */}
+      <AlertDialog open={!!payingSchedule} onOpenChange={(open) => !open && setPayingScheduleId(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Record Scheduled Payment</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2">
+                {payingSchedule && (
+                  <p>
+                    Record a payment of <span className="font-medium text-foreground">{formatPKR(payingSchedule.amount)}</span> to{' '}
+                    {payingSupplier?.name || 'this supplier'}, dated today. The next payment moves on from{' '}
+                    {payingSchedule.nextPaymentDate} ({payingSchedule.frequency}).
+                  </p>
+                )}
+                {payingSupplier && balanceAfterSchedulePayment !== null && (
+                  <p>
+                    Balance goes from <span className="font-medium text-foreground">{formatPKR(payingSupplier.balance)}</span> to{' '}
+                    <span className="font-medium text-foreground">{formatPKR(balanceAfterSchedulePayment)}</span>
+                    {balanceAfterSchedulePayment < 0 ? ' (more than you owe: the rest counts as paid in advance)' : ''}.
+                  </p>
+                )}
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmSchedulePaid}>Record Payment</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Delete payment schedule */}
+      <AlertDialog open={!!deletingSchedule} onOpenChange={(open) => !open && setDeletingScheduleId(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Payment Schedule</AlertDialogTitle>
+            <AlertDialogDescription>
+              {deletingSchedule
+                ? `Delete the ${deletingSchedule.frequency} schedule of ${formatPKR(deletingSchedule.amount)} for ${
+                    getSupplierById(deletingSchedule.supplierId)?.name || 'this supplier'
+                  }? Payments already recorded stay in the ledger.`
+                : ''}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmDeleteSchedule} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

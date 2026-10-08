@@ -2,7 +2,14 @@ import { useStore } from '@/contexts/useStore';
 import { Order, OrderItem as OrderItemType } from '@/types/pos';
 import { format } from 'date-fns';
 import { formatPKR } from '@/pages/Analytics';
-import { getOrderBreakdown, escapeHtml as esc } from '@/lib/orderMath';
+import {
+  exchangeShareLines,
+  getExchangeBreakdown,
+  getOrderBreakdown,
+  escapeHtml as esc,
+  type ExchangeReceiptLine,
+} from '@/lib/orderMath';
+import { billNumber } from '@/lib/exchange';
 import { Button } from '@/components/ui/button';
 import { Printer, Share2 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -45,11 +52,13 @@ function printHtmlReceipt(order: Order, items: OrderItemType[], settings: Receip
   const orderDate = format(new Date(order.createdAt), 'dd MMM yyyy');
   const orderTime = format(new Date(order.createdAt), 'hh:mm a');
   const breakdown = getOrderBreakdown(order, items);
+  // An exchange/return prints its own title and body; everything else is the normal invoice.
+  const isExchange = breakdown.isExchange;
 
   printWindow.document.write(`
     <html>
       <head>
-        <title>Invoice #${order.id.slice(-8).toUpperCase()}</title>
+        <title>${isExchange ? 'Exchange' : 'Invoice'} #${order.id.slice(-8).toUpperCase()}</title>
         <style>
           @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
@@ -321,8 +330,8 @@ function printHtmlReceipt(order: Order, items: OrderItemType[], settings: Receip
         </div>
 
         <!-- Invoice Title -->
-        <div class="invoice-title">Invoice</div>
-        <div class="invoice-number">#${order.id.slice(-8).toUpperCase()}</div>
+        ${isExchange ? exchangeTitleHtml(order) : `<div class="invoice-title">Invoice</div>
+        <div class="invoice-number">#${order.id.slice(-8).toUpperCase()}</div>`}
 
         <!-- Order Info -->
         <div class="order-info">
@@ -350,7 +359,7 @@ function printHtmlReceipt(order: Order, items: OrderItemType[], settings: Receip
           </div>` : ''}
         </div>
 
-        <!-- Items -->
+        ${isExchange ? exchangeBodyHtml(order, items) : `<!-- Items -->
         <div class="items-header">Items</div>
         <table class="item-table">
           <thead>
@@ -429,7 +438,7 @@ function printHtmlReceipt(order: Order, items: OrderItemType[], settings: Receip
         <!-- Credit Warning -->
         <div class="credit-warning">
           ⚠ CREDIT SALE — PAYMENT PENDING
-        </div>` : ''}
+        </div>` : ''}`}
 
         <!-- Footer -->
         <div class="receipt-footer">
@@ -457,6 +466,111 @@ function printHtmlReceipt(order: Order, items: OrderItemType[], settings: Receip
   }, 250);
 }
 
+const signedPKR = (amount: number) => (amount < 0 ? `-${formatPKR(-amount)}` : formatPKR(amount));
+
+function exchangeTitleHtml(order: Order): string {
+  return `<div class="invoice-title">Exchange / Return</div>
+        <div class="invoice-number">#${billNumber(order.id)}</div>
+        <div class="invoice-number">Against bill #${billNumber(order.originalOrderId || '')}</div>`;
+}
+
+/** One list of an exchange receipt. Quantities print as positive; returned amounts as negative. */
+function exchangeItemsHtml(title: string, lines: ExchangeReceiptLine[], returned: boolean): string {
+  if (lines.length === 0) return '';
+  return `
+        <div class="items-header">${title}</div>
+        <table class="item-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Item</th>
+              <th>Qty</th>
+              <th>Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${lines.map((l, index) => `
+              <tr>
+                <td>${index + 1}</td>
+                <td>
+                  <div class="item-name">${esc(l.item.productName)}</div>
+                  <div class="item-sku">${esc(l.item.productSku)} · ${formatPKR(l.item.unitPriceAtSale)} ea${l.discount > 0.005 ? ` · less discount ${formatPKR(l.discount)}` : ''}</div>
+                </td>
+                <td>${l.quantity}</td>
+                <td>${returned ? '-' : ''}${formatPKR(l.net)}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>`;
+}
+
+/** Items, totals and settlement of an exchange/return receipt. */
+function exchangeBodyHtml(order: Order, items: OrderItemType[]): string {
+  const ex = getExchangeBreakdown(order, items);
+  const totalLabel = ex.settlement === 'Even exchange' ? 'EVEN EXCHANGE' : `${ex.settlement.toUpperCase()}:`;
+  const totalValue = ex.settlement === 'Even exchange' ? '' : formatPKR(ex.settlementAmount);
+  const paymentRows = [
+    ex.settledVia ? `
+          <div class="info-row">
+            <span class="label">${esc(ex.settledVia.label)}:</span>
+            <span class="value">${esc(ex.settledVia.method.toUpperCase())}</span>
+          </div>` : '',
+    order.transactionId ? `
+          <div class="info-row">
+            <span class="label">TID:</span>
+            <span class="value">${esc(order.transactionId)}</span>
+          </div>` : '',
+    order.paymentMethod === 'cash' && order.amountTendered ? `
+          <div class="info-row">
+            <span class="label">Cash:</span>
+            <span class="value">${formatPKR(order.amountTendered)}</span>
+          </div>
+          <div class="info-row">
+            <span class="label">Change:</span>
+            <span class="value">${formatPKR(order.changeGiven || 0)}</span>
+          </div>` : '',
+  ].join('');
+
+  return `<!-- Exchange -->
+        ${exchangeItemsHtml('Returned', ex.returned, true)}
+        ${exchangeItemsHtml('New items', ex.added, false)}
+
+        <div class="summary-section">
+          <div class="summary-title">Exchange Total</div>
+          <div class="summary-row">
+            <span>Returned:</span>
+            <span>-${formatPKR(ex.returnedNet)}</span>
+          </div>
+          ${ex.added.length > 0 ? `
+          <div class="summary-row">
+            <span>New items:</span>
+            <span>${formatPKR(ex.newNet)}</span>
+          </div>` : ''}
+          <div class="summary-row">
+            <span>Tax:</span>
+            <span>${signedPKR(ex.tax)}</span>
+          </div>
+          ${ex.cardFee > 0 ? `
+          <div class="summary-row">
+            <span>Card Fee (${order.cardFeeRate ?? 0}%):</span>
+            <span>${formatPKR(ex.cardFee)}</span>
+          </div>` : ''}
+          <div class="summary-row grand-total">
+            <span>${totalLabel}</span>
+            <span>${totalValue}</span>
+          </div>
+        </div>
+
+        ${paymentRows ? `<div class="payment-info">${paymentRows}
+        </div>` : ''}
+
+        ${order.status === 'credit' ? `
+        <div class="credit-warning">
+          ⚠ ADDED TO ACCOUNT — PAYMENT PENDING
+        </div>` : ''}
+`;
+}
+
 interface ReceiptProps {
   order?: Order;
   showActions?: boolean;
@@ -475,6 +589,23 @@ export function Receipt({ order, showActions = false }: ReceiptProps) {
     text += `${settings.address}\n`;
     text += `Tel: ${settings.phone}\n\n`;
     text += `Date: ${format(new Date(order.createdAt), 'dd/MM/yyyy HH:mm')}\n`;
+    if (order.originalOrderId) {
+      // Exchange/return: its own layout from here down to the footer.
+      text += `*EXCHANGE / RETURN* #${billNumber(order.id)}\n`;
+      text += `Against bill: #${billNumber(order.originalOrderId)}\n`;
+      if (order.clientName) text += `Customer: ${order.clientName}\n`;
+      text += `Cashier: ${order.cashierName}\n\n`;
+      text += `━━━━━━━━━━━━━━━━━━━━\n`;
+      text += exchangeShareLines(order, items, formatPKR).join('\n');
+      if (order.transactionId) text += `\nTID: ${order.transactionId}`;
+      if (order.paymentMethod === 'cash' && order.amountTendered) {
+        text += `\nCash: ${formatPKR(order.amountTendered)}`;
+        text += `\nChange: ${formatPKR(order.changeGiven || 0)}`;
+      }
+      text += `\n\n${settings.receiptFooterMessage}`;
+      text += `\n\nTeam Axioms\nContact: 03367544180`;
+      return text;
+    }
     text += `Invoice: #${order.id.slice(-8).toUpperCase()}\n`;
     if (order.clientName) {
       text += `Customer: ${order.clientName}\n`;

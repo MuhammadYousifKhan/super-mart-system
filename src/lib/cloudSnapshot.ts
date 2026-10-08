@@ -6,6 +6,7 @@ import type {
   CustomerReminder,
   CustomerTransaction,
   Order,
+  OrderEditLog,
   OrderItem,
   Product,
   StoreSettings,
@@ -26,6 +27,8 @@ export interface CloudSnapshot {
   products: Product[];
   orders: Order[];
   orderItems: OrderItem[];
+  /** null when the table is missing (database not updated yet): keep the local bill history. */
+  orderEditLogs: OrderEditLog[] | null;
   /** null when there is no settings row: use the locally stored settings. */
   settings: Omit<StoreSettings, 'cardFeePercent'> & { cardFeePercent?: number } | null;
   customers: Customer[];
@@ -113,6 +116,7 @@ export const mapOrder = (o: any): Order => ({
   customerId: o.customer_id,
   cardFeeAmount: o.card_fee_amount,
   cardFeeRate: o.card_fee_rate,
+  originalOrderId: o.original_order_id ?? undefined,
 });
 
 export const mapOrderItem = (i: any): OrderItem => ({
@@ -125,6 +129,16 @@ export const mapOrderItem = (i: any): OrderItem => ({
   unitPriceAtSale: i.unit_price_at_sale,
   unitCostAtSale: i.unit_cost_at_sale ?? undefined,
   discountAmount: i.discount_amount,
+});
+
+export const mapOrderEditLog = (l: any): OrderEditLog => ({
+  id: l.id,
+  orderId: l.order_id,
+  editedBy: l.edited_by ?? '',
+  editedAt: l.edited_at,
+  changesSummary: l.changes_summary ?? '',
+  previousOrder: l.previous_order ?? {},
+  previousItems: l.previous_items ?? [],
 });
 
 export const mapSettings = (s: any): NonNullable<CloudSnapshot['settings']> => ({
@@ -217,6 +231,7 @@ export async function fetchCloudSnapshot(): Promise<CloudSnapshot> {
     productsData,
     ordersData,
     orderItemsData,
+    editLogsData,
     settingsResult,
     customersData,
     transactionsData,
@@ -230,6 +245,7 @@ export async function fetchCloudSnapshot(): Promise<CloudSnapshot> {
     fetchAllRows('products', false),
     fetchAllRows('orders', true),
     fetchAllRows('order_items', false),
+    fetchOptional('order_edit_logs', false),
     supabase.from('store_settings').select('*').single(),
     fetchAllRows('customers', true),
     fetchAllRows('customer_transactions', true),
@@ -245,6 +261,7 @@ export async function fetchCloudSnapshot(): Promise<CloudSnapshot> {
     products: productsData.map(mapProduct),
     orders: ordersData.map(mapOrder),
     orderItems: orderItemsData.map(mapOrderItem),
+    orderEditLogs: editLogsData?.map(mapOrderEditLog) ?? null,
     settings: settingsResult.error || !settingsResult.data ? null : mapSettings(settingsResult.data),
     customers: customersData.map(mapCustomer),
     customerTransactions: transactionsData.map(mapCustomerTransaction),

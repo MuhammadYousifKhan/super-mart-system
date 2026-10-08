@@ -1,7 +1,9 @@
-import { todayLocal } from '@/lib/dates';
+import { todayLocal, toLocalISODate } from '@/lib/dates';
+import { applyCustomerLedger, customerPaymentCharges, parseAmount } from '@/lib/ledger';
+import { escapeHtml } from '@/lib/orderMath';
 import { useState } from 'react';
 import { useStore } from '@/contexts/useStore';
-import { Customer, CustomerTransaction, ReminderFrequency } from '@/types/pos';
+import { Customer, CustomerReminder, CustomerTransaction, ReminderFrequency } from '@/types/pos';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -116,20 +118,26 @@ export default function Customers() {
   const [reminderFrequency, setReminderFrequency] = useState<ReminderFrequency>('weekly');
   const [nextReminderDate, setNextReminderDate] = useState(todayLocal());
   const [reminderNote, setReminderNote] = useState('');
+  const [editingReminderId, setEditingReminderId] = useState<string | null>(null);
 
-  // Edit transaction dialog state
-  const [showEditTransactionModal, setShowEditTransactionModal] = useState(false);
-  const [editingTransactionId, setEditingTransactionId] = useState<string | null>(null);
+  // Edit / delete transaction dialog state
+  const [editingTransaction, setEditingTransaction] = useState<CustomerTransaction | null>(null);
   const [editTransactionForm, setEditTransactionForm] = useState({
     amount: '',
     description: '',
+    paymentMethod: 'cash' as 'cash' | 'card',
+    date: '',
   });
+  const [deletingTransaction, setDeletingTransaction] = useState<CustomerTransaction | null>(null);
 
   // Always derive the selected customer from the live customers state
   // so edits to transactions immediately reflect in the ledger modal & print
   const liveSelectedCustomer = selectedCustomer
     ? customers.find((c) => c.id === selectedCustomer.id) || selectedCustomer
     : null;
+
+  const formatRs = (amount: number) => `Rs. ${amount.toLocaleString()}`;
+  const billNumber = (orderId: string) => orderId.slice(-8).toUpperCase();
 
   const filteredCustomers = customers.filter(
     (customer) =>
@@ -206,26 +214,18 @@ export default function Customers() {
 
   const handleAddPayment = () => {
     if (!selectedCustomer) return;
-    const amount = parseFloat(paymentAmount);
-    if (isNaN(amount) || amount <= 0) {
-      toast.error('Please enter a valid amount');
+    const amount = parseAmount(paymentAmount);
+    if (amount === null) {
+      toast.error('Enter an amount above 0 with at most 2 decimals');
       return;
     }
 
-    const cardFeePercent = settings.cardFeePercent;
-    const cardFee = paymentMethod === 'card' ? (amount * cardFeePercent) / 100 : 0;
-    const totalCharged = amount + cardFee;
-
-    addCustomerPayment(
-      selectedCustomer.id,
-      amount,
-      paymentDescription.trim() || `${paymentMethod === 'card' ? 'Card' : 'Cash'} payment received`,
-      paymentMethod
-    );
+    const charges = customerPaymentCharges(amount, paymentMethod, settings.cardFeePercent ?? 0);
+    if (!addCustomerPayment(selectedCustomer.id, amount, paymentDescription, paymentMethod)) return;
 
     toast.success(
       paymentMethod === 'card'
-        ? `Payment recorded. Card charge: Rs. ${cardFee.toLocaleString()} (Total charged: Rs. ${totalCharged.toLocaleString()})`
+        ? `Payment recorded. Card charge: ${formatRs(charges.cardFeeAmount ?? 0)} (Total charged: ${formatRs(charges.totalCharged ?? amount)})`
         : 'Payment recorded successfully'
     );
     setShowPaymentModal(false);
@@ -255,65 +255,115 @@ export default function Customers() {
     setShowPaymentModal(true);
   };
 
-  const openReminderModal = (customer: Customer) => {
-    setSelectedCustomer(customer);
+  const resetReminderForm = () => {
+    setEditingReminderId(null);
     setReminderFrequency('weekly');
     setNextReminderDate(todayLocal());
     setReminderNote('');
+  };
+
+  const openReminderModal = (customer: Customer) => {
+    setSelectedCustomer(customer);
+    resetReminderForm();
     setShowReminderModal(true);
   };
 
-  const handleAddReminder = () => {
+  const startEditReminder = (reminder: CustomerReminder) => {
+    setEditingReminderId(reminder.id);
+    setReminderFrequency(reminder.frequency);
+    setNextReminderDate(reminder.nextReminderDate);
+    setReminderNote(reminder.note || '');
+  };
+
+  const handleSaveReminder = () => {
     if (!selectedCustomer) return;
     if (!nextReminderDate) {
       toast.error('Next reminder date is required');
       return;
     }
 
-    addCustomerReminder(
-      selectedCustomer.id,
-      reminderFrequency,
-      nextReminderDate,
-      reminderNote.trim() || undefined
-    );
+    if (editingReminderId) {
+      const saved = updateCustomerReminder(editingReminderId, {
+        frequency: reminderFrequency,
+        nextReminderDate,
+        note: reminderNote.trim() || undefined,
+      });
+      if (!saved) return;
+      toast.success('Reminder updated');
+      resetReminderForm();
+      return;
+    }
+
+    if (!addCustomerReminder(selectedCustomer.id, reminderFrequency, nextReminderDate, reminderNote.trim() || undefined)) return;
     toast.success('Reminder scheduled successfully');
     setShowReminderModal(false);
+  };
+
+  const handleDeleteReminder = (id: string) => {
+    deleteCustomerReminder(id);
+    if (editingReminderId === id) resetReminderForm();
+    toast.success('Reminder deleted');
   };
 
   const dueReminders = getDueCustomerReminders();
 
   // Edit transaction handlers
   const openEditTransaction = (transaction: CustomerTransaction) => {
-    setEditingTransactionId(transaction.id);
+    setEditingTransaction(transaction);
     setEditTransactionForm({
       amount: String(transaction.amount),
       description: transaction.description,
+      paymentMethod: transaction.paymentMethod === 'card' ? 'card' : 'cash',
+      date: toLocalISODate(new Date(transaction.createdAt)),
     });
-    setShowEditTransactionModal(true);
   };
+
+  // Card fee shown while editing: a card payment keeps its own rate; switching to card uses today's.
+  const editFeeRate =
+    editingTransaction?.paymentMethod === 'card' ? editingTransaction.cardFeeRate ?? 0 : settings.cardFeePercent ?? 0;
+  const editAmount = parseAmount(editTransactionForm.amount);
+  const editCharges =
+    editAmount !== null ? customerPaymentCharges(editAmount, editTransactionForm.paymentMethod, editFeeRate) : null;
 
   const handleEditTransaction = () => {
-    if (!editingTransactionId) return;
-    const amount = parseFloat(editTransactionForm.amount);
-    if (isNaN(amount) || amount <= 0) {
-      toast.error('Please enter a valid amount');
-      return;
+    if (!editingTransaction) return;
+    let saved: boolean;
+    if (editingTransaction.orderId) {
+      // Tied to a bill: only the wording can change here.
+      saved = updateCustomerTransaction(editingTransaction.id, { description: editTransactionForm.description });
+    } else {
+      if (editAmount === null) {
+        toast.error('Enter an amount above 0 with at most 2 decimals');
+        return;
+      }
+      if (!editTransactionForm.date) {
+        toast.error('Choose a date');
+        return;
+      }
+      saved = updateCustomerTransaction(editingTransaction.id, {
+        amount: editAmount,
+        description: editTransactionForm.description,
+        date: editTransactionForm.date,
+        ...(editingTransaction.type === 'payment' ? { paymentMethod: editTransactionForm.paymentMethod } : {}),
+      });
     }
-
-    updateCustomerTransaction(editingTransactionId, {
-      amount,
-      description: editTransactionForm.description.trim(),
-    });
+    if (!saved) return;
 
     toast.success('Transaction updated successfully');
-    setShowEditTransactionModal(false);
-    setEditingTransactionId(null);
+    setEditingTransaction(null);
   };
 
-  const handleDeleteTransaction = (transactionId: string) => {
-    deleteCustomerTransaction(transactionId);
-    toast.success('Transaction deleted successfully');
+  const handleDeleteTransaction = () => {
+    if (!deletingTransaction) return;
+    if (deleteCustomerTransaction(deletingTransaction.id)) toast.success('Transaction deleted successfully');
+    setDeletingTransaction(null);
   };
+
+  // The customer's balance once the entry being deleted is gone (same rules as the database).
+  const balanceAfterDelete =
+    deletingTransaction && liveSelectedCustomer && liveSelectedCustomer.id === deletingTransaction.customerId
+      ? applyCustomerLedger(liveSelectedCustomer, { removed: [deletingTransaction] }).balance
+      : null;
 
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleDateString('en-US', {
@@ -359,7 +409,7 @@ export default function Customers() {
       printWindow.document.write(`
         <html>
           <head>
-            <title>Customer Ledger - ${customer.name}</title>
+            <title>Customer Ledger - ${escapeHtml(customer.name)}</title>
             <style>
               @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
@@ -581,10 +631,10 @@ export default function Customers() {
           <body>
             <!-- Header -->
             <div class="receipt-header">
-              <div class="store-name">${settings.storeName}</div>
+              <div class="store-name">${escapeHtml(settings.storeName)}</div>
               <div class="store-details">
-                ${settings.address}<br/>
-                Tel: ${settings.phone}
+                ${escapeHtml(settings.address)}<br/>
+                Tel: ${escapeHtml(settings.phone)}
               </div>
             </div>
 
@@ -595,20 +645,20 @@ export default function Customers() {
             <div class="customer-info">
               <div class="info-row">
                 <span class="label">Name:</span>
-                <span class="value">${customer.name}</span>
+                <span class="value">${escapeHtml(customer.name)}</span>
               </div>
               <div class="info-row">
                 <span class="label">Phone:</span>
-                <span class="value">${customer.phone}</span>
+                <span class="value">${escapeHtml(customer.phone)}</span>
               </div>
               ${customer.nic ? `
               <div class="info-row">
                 <span class="label">NIC:</span>
-                <span class="value">${customer.nic}</span>
+                <span class="value">${escapeHtml(customer.nic)}</span>
               </div>` : ''}
               <div class="info-row">
                 <span class="label">Address:</span>
-                <span class="value">${customer.address}</span>
+                <span class="value">${escapeHtml(customer.address)}</span>
               </div>
             </div>
 
@@ -637,7 +687,7 @@ export default function Customers() {
                       <span class="txn-type ${isCredit ? 'credit' : 'payment'}">${isCredit ? '▲ Credit' : '▼ Payment'}</span>
                       <span class="txn-amount">${isCredit ? '+' : '-'} Rs. ${transaction.amount.toLocaleString()}</span>
                     </div>
-                    <div class="txn-desc">${transaction.description}</div>
+                    <div class="txn-desc">${escapeHtml(transaction.description)}</div>
                     <div class="txn-meta">
                       <span>${date} ${time}</span>
                       ${transaction.type === 'payment' && transaction.paymentMethod ? `<span>${transaction.paymentMethod.toUpperCase()}${transaction.paymentMethod === 'card' && transaction.cardFeeAmount ? ` | Fee: Rs. ${transaction.cardFeeAmount.toLocaleString()}` : ''}</span>` : ''}
@@ -1130,9 +1180,24 @@ export default function Customers() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Customer</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete "{selectedCustomer?.name}"? This will also
-              delete all associated transaction history. This action cannot be undone.
+            <AlertDialogDescription asChild>
+              <div className="space-y-2">
+                <p>Are you sure you want to delete "{liveSelectedCustomer?.name}"?</p>
+                {liveSelectedCustomer && liveSelectedCustomer.balance !== 0 && (
+                  <p className="font-medium text-red-600 dark:text-red-400">
+                    {liveSelectedCustomer.balance > 0
+                      ? `This customer still owes ${formatRs(liveSelectedCustomer.balance)}. That balance will no longer be tracked anywhere.`
+                      : `This customer has ${formatRs(-liveSelectedCustomer.balance)} paid in advance. That will no longer be tracked anywhere.`}
+                  </p>
+                )}
+                {liveSelectedCustomer && (
+                  <p>
+                    Their ledger history ({getCustomerTransactions(liveSelectedCustomer.id).length} entries) and
+                    reminders ({getCustomerReminders(liveSelectedCustomer.id).length}) will be deleted too. Past bills
+                    keep the customer name printed on them. This action cannot be undone.
+                  </p>
+                )}
+              </div>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -1161,24 +1226,24 @@ export default function Customers() {
           </DialogHeader>
           <div className="py-4">
             {/* Summary Cards */}
-            {selectedCustomer && (
+            {liveSelectedCustomer && (
               <div className="grid grid-cols-3 gap-3 mb-4">
                 <div className="p-3 rounded-lg bg-yellow-500/10 border border-yellow-500/20">
                   <p className="text-xs text-yellow-700 dark:text-yellow-300">Total Credit</p>
                   <p className="text-lg font-bold text-yellow-600 dark:text-yellow-400">
-                    Rs. {selectedCustomer.totalCredit.toLocaleString()}
+                    Rs. {liveSelectedCustomer.totalCredit.toLocaleString()}
                   </p>
                 </div>
                 <div className="p-3 rounded-lg bg-green-500/10 border border-green-500/20">
                   <p className="text-xs text-green-700 dark:text-green-300">Total Paid</p>
                   <p className="text-lg font-bold text-green-600 dark:text-green-400">
-                    Rs. {selectedCustomer.totalPaid.toLocaleString()}
+                    Rs. {liveSelectedCustomer.totalPaid.toLocaleString()}
                   </p>
                 </div>
                 <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20">
                   <p className="text-xs text-red-700 dark:text-red-300">Balance Due</p>
                   <p className="text-lg font-bold text-red-600 dark:text-red-400">
-                    Rs. {selectedCustomer.balance.toLocaleString()}
+                    Rs. {liveSelectedCustomer.balance.toLocaleString()}
                   </p>
                 </div>
               </div>
@@ -1221,6 +1286,15 @@ export default function Customers() {
                             <div>
                               <p className="text-sm font-medium">
                                 {transaction.description}
+                                {transaction.orderId && (
+                                  <Badge
+                                    variant="outline"
+                                    className="ml-2 px-1.5 py-0 text-[10px] font-mono align-middle"
+                                    title="Edit or cancel the bill from POS → Manage Bills"
+                                  >
+                                    Bill #{billNumber(transaction.orderId)}
+                                  </Badge>
+                                )}
                               </p>
                               <p className="text-xs text-muted-foreground">
                                 {formatDate(transaction.createdAt)}
@@ -1245,28 +1319,32 @@ export default function Customers() {
                             {transaction.type === 'credit' ? '+' : '-'} Rs.{' '}
                             {transaction.amount.toLocaleString()}
                           </span>
-                          {transaction.type === 'payment' && (
-                            <div className="flex items-center gap-1 ml-2">
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7"
-                                onClick={() => openEditTransaction(transaction)}
-                                title="Edit transaction"
-                              >
-                                <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7"
-                                onClick={() => handleDeleteTransaction(transaction.id)}
-                                title="Delete transaction"
-                              >
-                                <Trash2 className="h-3.5 w-3.5 text-red-400" />
-                              </Button>
-                            </div>
-                          )}
+                          <div className="flex items-center gap-1 ml-2">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7"
+                              onClick={() => openEditTransaction(transaction)}
+                              title={transaction.orderId ? 'Edit description' : 'Edit transaction'}
+                            >
+                              <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
+                            </Button>
+                            {/* Bill entries follow the bill: they change when the bill is edited or cancelled. */}
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7"
+                              onClick={() => setDeletingTransaction(transaction)}
+                              disabled={!!transaction.orderId}
+                              title={
+                                transaction.orderId
+                                  ? 'Part of a bill: edit or cancel the bill from POS → Manage Bills'
+                                  : 'Delete transaction'
+                              }
+                            >
+                              <Trash2 className="h-3.5 w-3.5 text-red-400" />
+                            </Button>
+                          </div>
                         </div>
                       ))
                   )}
@@ -1277,17 +1355,17 @@ export default function Customers() {
           <DialogFooter>
             <Button
               variant="outline"
-              onClick={() => selectedCustomer && openPrintDateDialog(selectedCustomer)}
+              onClick={() => liveSelectedCustomer && openPrintDateDialog(liveSelectedCustomer)}
               className="gap-2"
             >
               <Printer className="h-4 w-4" />
               Print Ledger
             </Button>
-            {selectedCustomer && selectedCustomer.balance > 0 && (
+            {liveSelectedCustomer && liveSelectedCustomer.balance > 0 && (
               <Button
                 onClick={() => {
                   setShowLedgerModal(false);
-                  openPaymentModal(selectedCustomer);
+                  openPaymentModal(liveSelectedCustomer);
                 }}
                 className="gap-2"
               >
@@ -1308,10 +1386,10 @@ export default function Customers() {
           <DialogHeader>
             <DialogTitle>Record Payment</DialogTitle>
             <DialogDescription>
-              Record a payment from {selectedCustomer?.name}
-              {selectedCustomer && (
+              Record a payment from {liveSelectedCustomer?.name}
+              {liveSelectedCustomer && (
                 <span className="block mt-1 text-red-500 font-medium">
-                  Outstanding: Rs. {selectedCustomer.balance.toLocaleString()}
+                  Outstanding: Rs. {liveSelectedCustomer.balance.toLocaleString()}
                 </span>
               )}
             </DialogDescription>
@@ -1323,6 +1401,8 @@ export default function Customers() {
                 <DollarSign className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                 <Input
                   type="number"
+                  min="0"
+                  step="0.01"
                   value={paymentAmount}
                   onChange={(e) => setPaymentAmount(e.target.value)}
                   placeholder="Enter amount"
@@ -1345,16 +1425,32 @@ export default function Customers() {
                 </SelectContent>
               </Select>
             </div>
-            {paymentMethod === 'card' && (parseFloat(paymentAmount) || 0) > 0 && (
-              <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-sm">
-                <p className="text-amber-600 font-medium">
-                  Card charge ({settings.cardFeePercent}%): Rs. {(((parseFloat(paymentAmount) || 0) * settings.cardFeePercent) / 100).toLocaleString()}
-                </p>
-                <p className="text-amber-700 mt-1">
-                  Total charged to customer: Rs. {((parseFloat(paymentAmount) || 0) * (1 + settings.cardFeePercent / 100)).toLocaleString()}
-                </p>
-              </div>
-            )}
+            {(() => {
+              const amount = parseAmount(paymentAmount);
+              if (amount === null) return null;
+              const charges = customerPaymentCharges(amount, paymentMethod, settings.cardFeePercent ?? 0);
+              const balanceAfter = liveSelectedCustomer
+                ? applyCustomerLedger(liveSelectedCustomer, { added: [{ type: 'payment', amount, description: '' }] }).balance
+                : null;
+              return (
+                <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-sm space-y-1">
+                  {paymentMethod === 'card' && (
+                    <>
+                      <p className="text-amber-600 font-medium">
+                        Card charge ({settings.cardFeePercent ?? 0}%): {formatRs(charges.cardFeeAmount ?? 0)}
+                      </p>
+                      <p className="text-amber-700">Total charged to customer: {formatRs(charges.totalCharged ?? amount)}</p>
+                    </>
+                  )}
+                  {balanceAfter !== null && (
+                    <p className="text-foreground">
+                      Balance after this payment: <span className="font-medium">{formatRs(balanceAfter)}</span>
+                      {balanceAfter < 0 && ' (paid in advance)'}
+                    </p>
+                  )}
+                </div>
+              );
+            })()}
             <div className="space-y-2">
               <Label>Description (Optional)</Label>
               <Input
@@ -1390,7 +1486,7 @@ export default function Customers() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Bell className="h-5 w-5" />
-              Schedule Udhaar Reminder
+              {editingReminderId ? 'Edit Udhaar Reminder' : 'Schedule Udhaar Reminder'}
             </DialogTitle>
             <DialogDescription>
               Set reminder frequency for {selectedCustomer?.name}
@@ -1444,21 +1540,36 @@ export default function Customers() {
                   {getCustomerReminders(selectedCustomer.id).map((reminder) => (
                     <div
                       key={reminder.id}
-                      className="p-2 rounded border border-border/50 bg-muted/30 flex items-center justify-between"
+                      className={`p-2 rounded border bg-muted/30 flex items-center justify-between gap-2 ${
+                        editingReminderId === reminder.id ? 'border-primary' : 'border-border/50'
+                      }`}
                     >
                       <div>
                         <p className="text-sm font-medium">
                           {reminder.frequency.toUpperCase()} - {reminder.nextReminderDate}
+                          {!reminder.isActive && (
+                            <Badge variant="secondary" className="ml-2 text-[10px]">
+                              Paused
+                            </Badge>
+                          )}
                         </p>
                         {reminder.note && <p className="text-xs text-muted-foreground">{reminder.note}</p>}
                       </div>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => deleteCustomerReminder(reminder.id)}
-                      >
-                        Delete
-                      </Button>
+                      <div className="flex gap-1">
+                        <Button size="sm" variant="ghost" onClick={() => startEditReminder(reminder)}>
+                          Edit
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => updateCustomerReminder(reminder.id, { isActive: !reminder.isActive })}
+                        >
+                          {reminder.isActive ? 'Pause' : 'Resume'}
+                        </Button>
+                        <Button size="sm" variant="outline" onClick={() => handleDeleteReminder(reminder.id)}>
+                          Delete
+                        </Button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -1466,10 +1577,16 @@ export default function Customers() {
             )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowReminderModal(false)}>
-              Cancel
-            </Button>
-            <Button onClick={handleAddReminder}>Save Reminder</Button>
+            {editingReminderId ? (
+              <Button variant="outline" onClick={resetReminderForm}>
+                Cancel Edit
+              </Button>
+            ) : (
+              <Button variant="outline" onClick={() => setShowReminderModal(false)}>
+                Cancel
+              </Button>
+            )}
+            <Button onClick={handleSaveReminder}>{editingReminderId ? 'Update Reminder' : 'Save Reminder'}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1521,9 +1638,9 @@ export default function Customers() {
             </Button>
             <Button
               onClick={() => {
-                if (selectedCustomer) {
+                if (liveSelectedCustomer) {
                   setShowDateRangeDialog(false);
-                  handlePrintCustomerLedger(selectedCustomer);
+                  handlePrintCustomerLedger(liveSelectedCustomer);
                 }
               }}
               className="gap-2"
@@ -1536,7 +1653,7 @@ export default function Customers() {
       </Dialog>
 
       {/* Edit Transaction Modal */}
-      <Dialog open={showEditTransactionModal} onOpenChange={setShowEditTransactionModal}>
+      <Dialog open={!!editingTransaction} onOpenChange={(open) => !open && setEditingTransaction(null)}>
         <DialogContent className="bg-card border-border">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
@@ -1544,47 +1661,138 @@ export default function Customers() {
               Edit Transaction
             </DialogTitle>
             <DialogDescription>
-              Update the payment amount or description
+              {editingTransaction?.orderId
+                ? 'Only the description can be changed here.'
+                : 'Update the amount, payment method, date or description'}
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label>Amount (Rs.) *</Label>
-              <div className="relative">
-                <DollarSign className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          {editingTransaction && (
+            <div className="space-y-4 py-4">
+              {editingTransaction.orderId && (
+                <div className="p-3 rounded-lg bg-blue-500/10 border border-blue-500/20 text-sm">
+                  <p className="font-medium">
+                    {editingTransaction.type === 'credit' ? 'Credit sale' : 'Credit reversal'} of{' '}
+                    <span className="font-mono">Bill #{billNumber(editingTransaction.orderId)}</span>:{' '}
+                    {formatRs(editingTransaction.amount)}
+                  </p>
+                  <p className="text-muted-foreground mt-1">
+                    The amount follows the bill. To change it, edit or cancel the bill from POS → Manage Bills.
+                  </p>
+                </div>
+              )}
+              {!editingTransaction.orderId && (
+                <>
+                  <div className="space-y-2">
+                    <Label>Amount (Rs.) *</Label>
+                    <div className="relative">
+                      <DollarSign className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                      <Input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={editTransactionForm.amount}
+                        onChange={(e) => setEditTransactionForm({ ...editTransactionForm, amount: e.target.value })}
+                        placeholder="Enter amount"
+                        className="pl-10 bg-muted/40 border-border/50"
+                      />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    {editingTransaction.type === 'payment' && (
+                      <div className="space-y-2">
+                        <Label>Payment Method</Label>
+                        <Select
+                          value={editTransactionForm.paymentMethod}
+                          onValueChange={(value) =>
+                            setEditTransactionForm({ ...editTransactionForm, paymentMethod: value as 'cash' | 'card' })
+                          }
+                        >
+                          <SelectTrigger className="bg-muted/40 border-border/50">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="cash">Cash</SelectItem>
+                            <SelectItem value="card">Card ({editFeeRate}% charge)</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
+                    <div className="space-y-2">
+                      <Label>Date</Label>
+                      <Input
+                        type="date"
+                        max={todayLocal()}
+                        value={editTransactionForm.date}
+                        onChange={(e) => setEditTransactionForm({ ...editTransactionForm, date: e.target.value })}
+                        className="bg-muted/40 border-border/50"
+                      />
+                    </div>
+                  </div>
+                  {editingTransaction.type === 'payment' && editTransactionForm.paymentMethod === 'card' && editCharges && (
+                    <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-sm">
+                      <p className="text-amber-600 font-medium">
+                        Card charge ({editFeeRate}%): {formatRs(editCharges.cardFeeAmount ?? 0)}
+                      </p>
+                      <p className="text-amber-700 mt-1">
+                        Total charged to customer: {formatRs(editCharges.totalCharged ?? editAmount ?? 0)}
+                      </p>
+                    </div>
+                  )}
+                </>
+              )}
+              <div className="space-y-2">
+                <Label>Description</Label>
                 <Input
-                  type="number"
-                  value={editTransactionForm.amount}
-                  onChange={(e) => setEditTransactionForm({ ...editTransactionForm, amount: e.target.value })}
-                  placeholder="Enter amount"
-                  className="pl-10 bg-muted/40 border-border/50"
+                  value={editTransactionForm.description}
+                  onChange={(e) => setEditTransactionForm({ ...editTransactionForm, description: e.target.value })}
+                  placeholder="Payment description"
+                  className="bg-muted/40 border-border/50"
                 />
               </div>
             </div>
-            <div className="space-y-2">
-              <Label>Description</Label>
-              <Input
-                value={editTransactionForm.description}
-                onChange={(e) => setEditTransactionForm({ ...editTransactionForm, description: e.target.value })}
-                placeholder="Payment description"
-                className="bg-muted/40 border-border/50"
-              />
-            </div>
-          </div>
+          )}
           <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => {
-                setShowEditTransactionModal(false);
-                setEditingTransactionId(null);
-              }}
-            >
+            <Button variant="outline" onClick={() => setEditingTransaction(null)}>
               Cancel
             </Button>
             <Button onClick={handleEditTransaction}>Save Changes</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Delete Transaction Confirmation */}
+      <AlertDialog open={!!deletingTransaction} onOpenChange={(open) => !open && setDeletingTransaction(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Transaction</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2">
+                {deletingTransaction && (
+                  <p>
+                    Delete the {deletingTransaction.type === 'credit' ? 'credit entry' : 'payment'} of{' '}
+                    <span className="font-medium text-foreground">{formatRs(deletingTransaction.amount)}</span>
+                    {deletingTransaction.description ? ` ("${deletingTransaction.description}")` : ''}?
+                  </p>
+                )}
+                {liveSelectedCustomer && balanceAfterDelete !== null && (
+                  <p>
+                    {liveSelectedCustomer.name}'s balance goes from{' '}
+                    <span className="font-medium text-foreground">{formatRs(liveSelectedCustomer.balance)}</span> to{' '}
+                    <span className="font-medium text-foreground">{formatRs(balanceAfterDelete)}</span>.
+                  </p>
+                )}
+                <p>This action cannot be undone.</p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleDeleteTransaction} className="bg-red-600 hover:bg-red-700">
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

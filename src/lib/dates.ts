@@ -37,6 +37,19 @@ export function addPeriod(value: string, frequency: Frequency): string {
   return toLocalISODate(date);
 }
 
+/** True for a real calendar day written as YYYY-MM-DD (rejects '', '2026-02-31', ...). */
+export function isValidLocalDate(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) && toLocalISODate(parseLocalDate(value)) === value;
+}
+
+/** The timestamp `iso` moved to the calendar day `date` (YYYY-MM-DD), keeping its local time of day. */
+export function withLocalDate(iso: string, date: string): string {
+  const moment = new Date(iso);
+  const day = parseLocalDate(date);
+  moment.setFullYear(day.getFullYear(), day.getMonth(), day.getDate());
+  return moment.toISOString();
+}
+
 /** Next due date after `today`, skipping any periods that were missed. */
 export function nextDueDate(current: string, frequency: Frequency, today: string = todayLocal()): string {
   let next = addPeriod(current, frequency);

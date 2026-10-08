@@ -42,6 +42,10 @@ const productSchema = z.object({
 
 type ProductFormData = z.infer<typeof productSchema>;
 
+// Receive Supplier Stock makes a separate product per expiry date ("SKU-EXP-YYYYMMDD") that keeps
+// the original barcode, so those batches may share one barcode.
+const baseSku = (sku: string) => sku.trim().replace(/(-(EXP-\d{8}|B\d{4}))+$/i, '').toLowerCase();
+
 interface ProductFormProps {
   product?: Product;
   onSuccess: () => void;
@@ -84,44 +88,53 @@ export function ProductForm({ product, onSuccess }: ProductFormProps) {
         },
   });
 
-  const onSubmit = (data: ProductFormData) => {
+  const onSubmit = (raw: ProductFormData) => {
+    const data = { ...raw, sku: raw.sku.trim(), name: raw.name.trim(), barcode: raw.barcode?.trim() || '' };
+    const fail = (field: keyof ProductFormData, message: string) => {
+      form.setError(field, { message });
+      setIsSubmitting(false);
+    };
     setIsSubmitting(true);
 
-    // Check for duplicate SKU
-    const existingSku = products.find(
-      (p) => p.sku.toLowerCase() === data.sku.toLowerCase() && p.id !== product?.id
-    );
-    if (existingSku) {
-      form.setError('sku', { message: 'SKU already exists' });
-      setIsSubmitting(false);
-      return;
-    }
+    if (!data.sku) return fail('sku', 'SKU is required');
+    if (!data.name) return fail('name', 'Name is required');
 
-    const barcode = data.barcode?.trim().toLowerCase();
+    // Check for duplicate SKU (the SKU finds the product when typed or scanned)
+    const existingSku = products.find(
+      (p) => p.sku.trim().toLowerCase() === data.sku.toLowerCase() && p.id !== product?.id
+    );
+    if (existingSku) return fail('sku', `SKU already used by ${existingSku.name}`);
+
+    // A scanned barcode adds the first product that has it, so two different products must never
+    // share one. Batches of the same product (see baseSku) may.
+    const barcode = data.barcode.toLowerCase();
     if (barcode) {
       const sameBarcode = products.find(
-        (p) => p.barcode?.trim().toLowerCase() === barcode && p.id !== product?.id
+        (p) => p.barcode?.trim().toLowerCase() === barcode && p.id !== product?.id && baseSku(p.sku) !== baseSku(data.sku)
       );
-      if (sameBarcode) {
-        form.setError('barcode', { message: `Barcode already used by ${sameBarcode.name}` });
-        setIsSubmitting(false);
-        return;
-      }
+      if (sameBarcode) return fail('barcode', `Barcode already used by ${sameBarcode.name} (${sameBarcode.sku})`);
     }
+
+    // The database rejects a product whose category or unit no longer exists.
+    if (!categories.some((c) => c.id === data.categoryId)) return fail('categoryId', 'Choose a category');
+    if (!units.some((u) => u.id === data.unitId)) return fail('unitId', 'Choose a unit');
 
     if (product) {
       // Stock is only sent when it was changed in this form; otherwise sales made while the
       // form was open would be overwritten with the value it was opened with.
       const { stockQuantity, ...otherFields } = data;
-      updateProduct(product.id, form.formState.dirtyFields.stockQuantity ? { ...otherFields, stockQuantity } : otherFields);
-      toast.success('Product updated');
-    } else {
-      if (data.stockQuantity < 0) {
-        form.setError('stockQuantity', { message: 'Must be non-negative' });
+      const saved = updateProduct(
+        product.id,
+        form.formState.dirtyFields.stockQuantity ? { ...otherFields, stockQuantity } : otherFields
+      );
+      if (!saved) {
         setIsSubmitting(false);
         return;
       }
-      addProduct({
+      toast.success('Product updated');
+    } else {
+      if (data.stockQuantity < 0) return fail('stockQuantity', 'Must be non-negative');
+      const saved = addProduct({
         sku: data.sku,
         name: data.name,
         description: data.description || '',
@@ -135,6 +148,10 @@ export function ProductForm({ product, onSuccess }: ProductFormProps) {
         barcode: data.barcode || undefined,
         barcodeEnabled: data.barcodeEnabled || false,
       });
+      if (!saved) {
+        setIsSubmitting(false);
+        return;
+      }
       toast.success('Product created');
     }
 

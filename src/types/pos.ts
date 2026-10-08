@@ -138,6 +138,12 @@ export interface Order {
   // Card fee (if payment by card)
   cardFeeAmount?: number;
   cardFeeRate?: number;
+  /**
+   * Set on an exchange/return: the bill the goods came back from. Such an order is dated when
+   * the exchange happened; returned goods are lines with a negative quantity, replacement goods
+   * are normal lines, and the total is the difference (negative = money refunded).
+   */
+  originalOrderId?: string;
 }
 
 export interface OrderItem {

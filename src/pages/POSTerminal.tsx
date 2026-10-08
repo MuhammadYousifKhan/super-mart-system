@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useStore } from '@/contexts/useStore';
 import { cn } from '@/lib/utils';
 import { Input } from '@/components/ui/input';
@@ -9,12 +9,12 @@ import { Label } from '@/components/ui/label';
 import { CartDrawer } from '@/components/pos/CartDrawer';
 import { CheckoutModal } from '@/components/pos/CheckoutModal';
 import { HeldCartsPanel } from '@/components/pos/HeldCartsPanel';
-import { Receipt, printOrderReceipt } from '@/components/pos/Receipt';
+import { printOrderReceipt } from '@/components/pos/Receipt';
+import { CancelBillDialog } from '@/components/pos/CancelBillDialog';
+import { ExchangeDialog } from '@/components/pos/ExchangeDialog';
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
@@ -40,12 +40,35 @@ import {
   User,
   Eye,
   Printer,
+  ArrowLeftRight,
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { Order, OrderItem } from '@/types/pos';
+import { Order, PaymentMethod } from '@/types/pos';
 import { format } from 'date-fns';
 import { POSNumpad } from '@/components/pos/POSNumpad';
-import { computeEditedOrderTotals } from '@/lib/orderMath';
+import { computeEditedOrderTotals, exchangeShareLines } from '@/lib/orderMath';
+import {
+  billNumber,
+  cancelBlockReason,
+  editBlockReason,
+  exchangeBlockReason,
+  isExchangeOrder,
+} from '@/lib/exchange';
+
+// How many bills Manage Bills lists at once (the newest, or the newest matches of a search).
+const BILL_LIST_LIMIT = 50;
+
+/** Which way the money went on an exchange, e.g. "Refund PKR 1,100"; null for a normal bill. */
+function exchangeAmountLabel(order: Order): string | null {
+  if (!isExchangeOrder(order)) return null;
+  const toAccount = order.paymentMethod === 'credit';
+  if (order.totalAmount > 0.005) return `${toAccount ? 'Added to account' : 'Customer pays'} ${formatPKR(order.totalAmount)}`;
+  if (order.totalAmount < -0.005) return `${toAccount ? 'Refund to account' : 'Refund'} ${formatPKR(-order.totalAmount)}`;
+  return 'Even exchange';
+}
+
+/** A bill's amount as staff read it in lists. */
+const billAmountLabel = (order: Order) => exchangeAmountLabel(order) ?? `Total: ${formatPKR(order.totalAmount)}`;
 
 
 export default function POSTerminal() {
@@ -58,7 +81,6 @@ export default function POSTerminal() {
     heldCarts,
     settings,
     calculateTotal,
-    updateOrder,
     updateOrderFull,
     cancelOrder,
     holdCart,
@@ -87,6 +109,9 @@ export default function POSTerminal() {
 
   // Full bill editor state
   interface EditItem {
+    /** Identifies the row in the editor (lines of deleted products share an empty product id). */
+    key: string;
+    sourceItemId?: string;
     productId: string;
     productName: string;
     productSku: string;
@@ -96,10 +121,46 @@ export default function POSTerminal() {
   }
   const [editItems, setEditItems] = useState<EditItem[]>([]);
   const [editProductSearch, setEditProductSearch] = useState('');
-  const [editPaymentMethod, setEditPaymentMethod] = useState<string>('');
+  const [editPaymentMethod, setEditPaymentMethod] = useState<PaymentMethod>('cash');
   const [editCustomerId, setEditCustomerId] = useState<string>('');
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
 
-  const recentOrders = orders.slice(0, 50);
+  // Manage Bills: search, cancel confirmation, exchange, and history
+  const [billSearch, setBillSearch] = useState('');
+  const [cancelTarget, setCancelTarget] = useState<Order | null>(null);
+  const [exchangeTarget, setExchangeTarget] = useState<Order | null>(null);
+  const [historyOrderId, setHistoryOrderId] = useState<string | null>(null);
+
+  // Searches every bill (not just the newest), so a customer coming back days later can be found.
+  const listedOrders = useMemo(() => {
+    const q = billSearch.trim().toLowerCase();
+    if (!q) return orders.slice(0, BILL_LIST_LIMIT);
+    const amountQuery = q.replace(/,/g, '');
+    const isAmount = /^\d+(\.\d+)?$/.test(amountQuery);
+    const customerNames = new Map(customers.map((c) => [c.id, c.name.toLowerCase()]));
+    const matches: Order[] = [];
+    for (const order of orders) {
+      const total = Math.abs(order.totalAmount);
+      const hit =
+        order.id.slice(-8).toLowerCase().includes(q) ||
+        (order.clientName || '').toLowerCase().includes(q) ||
+        (order.clientPhone || '').toLowerCase().includes(q) ||
+        (!!order.customerId && (customerNames.get(order.customerId) || '').includes(q)) ||
+        (isAmount && (String(Math.round(total)) === amountQuery || total.toFixed(2).startsWith(amountQuery)));
+      if (hit) {
+        matches.push(order);
+        if (matches.length >= BILL_LIST_LIMIT) break;
+      }
+    }
+    return matches;
+  }, [orders, customers, billSearch]);
+
+  // Bills with returns/exchanges against them that still stand.
+  const exchangedBillIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const o of orders) if (o.originalOrderId && o.status !== 'refunded') ids.add(o.originalOrderId);
+    return ids;
+  }, [orders]);
 
   // Filtered products for the edit dialog add-product search
   const editFilteredProducts = editProductSearch.trim()
@@ -197,17 +258,25 @@ export default function POSTerminal() {
   };
 
   const openEditBillDialog = (order: Order) => {
+    const blocked = editBlockReason(order, orders);
+    if (blocked) {
+      toast.error(blocked);
+      return;
+    }
     setSelectedOrder(order);
     setEditClientName(order.clientName || '');
     setEditClientPhone(order.clientPhone || '');
     setEditPaymentMethod(order.paymentMethod);
-    setEditCustomerId(order.customerId || '');
+    // A customer deleted since can't be kept on the bill.
+    setEditCustomerId(order.customerId && getCustomerById(order.customerId) ? order.customerId : '');
     setShowEditHistory(false);
 
     // Load existing order items into editable state
     const currentItems = getOrderItems(order.id);
     setEditItems(
       currentItems.map((item) => ({
+        key: item.id,
+        sourceItemId: item.id,
         productId: item.productId,
         productName: item.productName,
         productSku: item.productSku,
@@ -225,7 +294,7 @@ export default function POSTerminal() {
     if (existing) {
       setEditItems((prev) =>
         prev.map((item) =>
-          item.productId === product.id
+          item.key === existing.key
             ? { ...item, quantity: item.quantity + 1 }
             : item
         )
@@ -234,6 +303,7 @@ export default function POSTerminal() {
       setEditItems((prev) => [
         ...prev,
         {
+          key: `new-${product.id}`,
           productId: product.id,
           productName: product.name,
           productSku: product.sku,
@@ -247,28 +317,51 @@ export default function POSTerminal() {
     toast.success(`Added ${product.name} to bill`);
   };
 
+  // A credit bill must stay on someone's account.
+  const editNeedsCustomer = editPaymentMethod === 'credit' && !editCustomerId;
+
   const handleSaveBillEdit = async () => {
-    if (!selectedOrder) return;
+    if (!selectedOrder || isSavingEdit) return;
     if (editItems.length === 0) {
       toast.error('Bill must have at least one item');
       return;
     }
-    await updateOrderFull(selectedOrder.id, editItems, {
-      clientName: editClientName.trim() || undefined,
-      clientPhone: editClientPhone.trim() || undefined,
-      paymentMethod: editPaymentMethod as any,
-      customerId: editCustomerId || undefined,
-    });
-    setIsEditBillDialogOpen(false);
-  };
-
-  const handleCancelBill = async (order: Order) => {
-    if (order.status === 'refunded') {
-      toast.info('Bill is already cancelled');
+    if (editNeedsCustomer) {
+      toast.error('A credit bill needs a customer. Choose one, or pick another payment method.');
       return;
     }
-    await cancelOrder(order.id);
-    toast.success('Bill cancelled and stock restored');
+    setIsSavingEdit(true);
+    try {
+      const saved = await updateOrderFull(
+        selectedOrder.id,
+        editItems.map(({ key: _key, ...line }) => line),
+        {
+          clientName: editClientName.trim() || undefined,
+          clientPhone: editClientPhone.trim() || undefined,
+          paymentMethod: editPaymentMethod,
+          // Empty removes the customer from the bill.
+          customerId: editCustomerId || undefined,
+        }
+      );
+      if (saved) setIsEditBillDialogOpen(false);
+    } finally {
+      setIsSavingEdit(false);
+    }
+  };
+
+  const handleCancelBill = async (order: Order, reason: string) => {
+    const cancelled = await cancelOrder(order.id, reason);
+    if (cancelled) {
+      toast.success(isExchangeOrder(order) ? 'Exchange cancelled and everything put back' : 'Bill cancelled and stock restored');
+    }
+    return cancelled;
+  };
+
+  const handleExchangeComplete = (exchange: Order) => {
+    setExchangeTarget(null);
+    setIsManageBillsDialogOpen(false);
+    setLastOrder(exchange);
+    setShowReceipt(true);
   };
 
   const handlePrintReceipt = useCallback(() => {
@@ -285,7 +378,9 @@ export default function POSTerminal() {
 
   // Hotkeys
   useEffect(() => {
-    const anyDialogOpen = isCheckoutOpen || isCartOpen || isManageBillsDialogOpen || isEditBillDialogOpen;
+    // Bill dialogs (manage, edit, exchange, cancel) handle their own keys.
+    const billDialogOpen = isManageBillsDialogOpen || isEditBillDialogOpen || !!exchangeTarget || !!cancelTarget;
+    const anyDialogOpen = isCheckoutOpen || isCartOpen || billDialogOpen;
 
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null;
@@ -331,9 +426,9 @@ export default function POSTerminal() {
         searchInputRef.current?.focus();
       } else if (e.key === 'F12') {
         e.preventDefault();
-        if (cart.length > 0 && !isManageBillsDialogOpen && !isEditBillDialogOpen) setIsCheckoutOpen(true);
+        if (cart.length > 0 && !billDialogOpen) setIsCheckoutOpen(true);
       } else if (e.key === 'Escape') {
-        if (isManageBillsDialogOpen || isEditBillDialogOpen) return; // the dialog closes itself
+        if (billDialogOpen) return; // the dialog closes itself
         e.preventDefault();
         if (isCheckoutOpen) {
           setIsCheckoutOpen(false);
@@ -348,7 +443,7 @@ export default function POSTerminal() {
         }
       } else if (e.key === 'F9') {
         e.preventDefault();
-        if (cart.length > 0 && !isManageBillsDialogOpen && !isEditBillDialogOpen) {
+        if (cart.length > 0 && !billDialogOpen) {
           holdCart(`Bill held at ${new Date().toLocaleTimeString()}`);
           toast.success('Bill placed on hold');
         }
@@ -387,6 +482,8 @@ export default function POSTerminal() {
     isCartOpen,
     isManageBillsDialogOpen,
     isEditBillDialogOpen,
+    exchangeTarget,
+    cancelTarget,
     showReceipt,
     handlePrintReceipt,
     clearCart,
@@ -442,7 +539,11 @@ export default function POSTerminal() {
             variant="outline" 
             size="sm" 
             className="border-primary/20 text-primary hover:bg-primary/10"
-            onClick={() => setIsManageBillsDialogOpen(true)}
+            onClick={() => {
+              setBillSearch('');
+              setHistoryOrderId(null);
+              setIsManageBillsDialogOpen(true);
+            }}
           >
             <ReceiptIcon className="w-4 h-4 mr-2" />
             Manage Bills
@@ -573,35 +674,79 @@ export default function POSTerminal() {
           <DialogHeader>
             <DialogTitle className="text-2xl font-bold flex items-center gap-2">
               <ReceiptIcon className="w-6 h-6 text-primary" />
-              Manage Recent Bills
+              Manage Bills
             </DialogTitle>
           </DialogHeader>
-          <div className="flex-1 overflow-auto mt-4 px-1">
+          <div className="space-y-1">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+              <Input
+                value={billSearch}
+                onChange={(e) => setBillSearch(e.target.value)}
+                placeholder="Search all bills: bill no., customer, phone or amount"
+                className="pl-9 h-10"
+              />
+            </div>
+            <p className="text-xs text-muted-foreground px-1">
+              {billSearch.trim()
+                ? listedOrders.length >= BILL_LIST_LIMIT
+                  ? `Showing the newest ${BILL_LIST_LIMIT} matches. Type more to narrow it down.`
+                  : `${listedOrders.length} matching bill${listedOrders.length === 1 ? '' : 's'}`
+                : `Newest ${BILL_LIST_LIMIT} bills. Search to find older ones.`}
+            </p>
+          </div>
+          <div className="flex-1 overflow-auto mt-2 px-1">
              <div className="space-y-4">
-              {recentOrders.length === 0 ? (
+              {listedOrders.length === 0 ? (
                  <div className="text-center text-muted-foreground p-8">
-                    No recent bills found.
+                    {billSearch.trim() ? 'No bills match this search.' : 'No recent bills found.'}
                  </div>
               ) : (
-                recentOrders.map(order => (
-                  <div key={order.id} className="glass-card p-4 rounded-xl flex items-center justify-between gap-4">
+                listedOrders.map(order => {
+                  const exchange = isExchangeOrder(order);
+                  const hasExchanges = exchangedBillIds.has(order.id);
+                  // Only bills with exchanges need the full list to work out what is locked.
+                  const related = hasExchanges ? orders : [];
+                  const editLock = editBlockReason(order, related);
+                  const cancelLock = cancelBlockReason(order, related);
+                  const exchangeLock = exchangeBlockReason(order);
+                  const lockHint = order.status === 'refunded' ? null : exchange ? exchangeLock : editLock;
+                  const logs = getOrderEditLogs(order.id);
+                  const showHistory = historyOrderId === order.id;
+                  return (
+                  <div key={order.id} className="glass-card p-4 rounded-xl">
+                    <div className="flex items-center justify-between gap-4">
                     <div>
-                      <div className="flex items-center gap-2 mb-1">
-                        <span className="font-semibold">{order.id.slice(-8).toUpperCase()}</span>
+                      <div className="flex items-center gap-2 mb-1 flex-wrap">
+                        <span className="font-semibold">{billNumber(order.id)}</span>
                         <Badge variant={order.status === 'completed' ? 'default' : order.status === 'refunded' ? 'destructive' : 'secondary'}>
-                          {order.status}
+                          {order.status === 'refunded' ? 'cancelled' : order.status}
                         </Badge>
+                        {exchange && order.originalOrderId && (
+                          <Badge variant="outline" className="border-primary/40 text-primary bg-primary/5">
+                            <ArrowLeftRight className="w-3 h-3 mr-1" />
+                            Exchange for bill #{billNumber(order.originalOrderId)}
+                          </Badge>
+                        )}
+                        {hasExchanges && (
+                          <Badge variant="outline" className="border-warning/50 text-warning bg-warning/10">
+                            Returned items
+                          </Badge>
+                        )}
                       </div>
                       <div className="text-sm text-muted-foreground flex flex-col gap-1">
                         {order.clientName && <span>Client: {order.clientName} {order.clientPhone && `(${order.clientPhone})`}</span>}
                         <span>Date: {format(new Date(order.createdAt), 'MMM dd, yyyy HH:mm')}</span>
-                        <span>Total: {formatPKR(order.totalAmount)}</span>
+                        <span>
+                          {billAmountLabel(order)}
+                          <span className="capitalize"> ({order.paymentMethod === 'credit' ? 'account' : order.paymentMethod})</span>
+                        </span>
                       </div>
                     </div>
                     <div className="flex gap-2 flex-wrap justify-end">
-                      <Button 
-                        variant="outline" 
-                        size="sm" 
+                      <Button
+                        variant="outline"
+                        size="sm"
                         className="bg-primary/5 hover:bg-primary/10 border-primary/20 text-primary"
                         onClick={() => {
                           const items = getOrderItems(order.id);
@@ -611,9 +756,9 @@ export default function POSTerminal() {
                         <Printer className="w-3.5 h-3.5 mr-1.5" />
                         Print
                       </Button>
-                      <Button 
-                        variant="outline" 
-                        size="sm" 
+                      <Button
+                        variant="outline"
+                        size="sm"
                         onClick={() => {
                           setLastOrder(order);
                           setIsManageBillsDialogOpen(false);
@@ -623,30 +768,89 @@ export default function POSTerminal() {
                         <Eye className="w-3.5 h-3.5 mr-1.5" />
                         View
                       </Button>
-                      <Button variant="outline" size="sm" onClick={() => openEditBillDialog(order)}>
+                      {logs.length > 0 && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className={cn(showHistory && 'bg-muted')}
+                          onClick={() => setHistoryOrderId(showHistory ? null : order.id)}
+                        >
+                          <History className="w-3.5 h-3.5 mr-1.5" />
+                          History ({logs.length})
+                        </Button>
+                      )}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={!!editLock}
+                        title={editLock || undefined}
+                        onClick={() => openEditBillDialog(order)}
+                      >
                         <Pencil className="w-3.5 h-3.5 mr-1.5" />
                         Edit
                       </Button>
-                      <Button 
-                        variant="destructive" 
-                        size="sm" 
-                        disabled={order.status === 'refunded'}
-                        onClick={() => {
-                          if (window.confirm('Are you sure you want to cancel this bill? This will restore stock limits.')) {
-                            handleCancelBill(order);
-                          }
-                        }}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={!!exchangeLock}
+                        title={exchangeLock || undefined}
+                        onClick={() => setExchangeTarget(order)}
+                      >
+                        <ArrowLeftRight className="w-3.5 h-3.5 mr-1.5" />
+                        Return / Exchange
+                      </Button>
+                      <Button
+                        variant="destructive"
+                        size="sm"
+                        disabled={!!cancelLock}
+                        title={cancelLock || undefined}
+                        onClick={() => setCancelTarget(order)}
                       >
                         Cancel
                       </Button>
                     </div>
+                    </div>
+                    {lockHint && (
+                      <p className="text-xs text-muted-foreground mt-2 flex items-center gap-1.5">
+                        <XCircle className="w-3.5 h-3.5 shrink-0" />
+                        {lockHint}
+                      </p>
+                    )}
+                    {showHistory && (
+                      <div className="space-y-2 mt-3 max-h-48 overflow-auto">
+                        {logs.map((log) => (
+                          <div key={log.id} className="text-xs bg-muted/20 rounded-lg p-3 border border-border/30">
+                            <div className="flex justify-between items-center mb-1">
+                              <span className="font-medium text-foreground">{log.editedBy}</span>
+                              <span className="text-muted-foreground">{format(new Date(log.editedAt), 'MMM dd, yyyy HH:mm')}</span>
+                            </div>
+                            <p className="text-muted-foreground leading-relaxed">{log.changesSummary}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
-                ))
+                  );
+                })
               )}
              </div>
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Cancel a bill or an exchange (asks for an optional reason) */}
+      <CancelBillDialog
+        order={cancelTarget}
+        onOpenChange={(open) => !open && setCancelTarget(null)}
+        onConfirm={handleCancelBill}
+      />
+
+      {/* Return / exchange against a bill */}
+      <ExchangeDialog
+        order={exchangeTarget}
+        onOpenChange={(open) => !open && setExchangeTarget(null)}
+        onComplete={handleExchangeComplete}
+      />
 
 
       {/* Full Bill Editor Dialog */}
@@ -679,7 +883,7 @@ export default function POSTerminal() {
                 ) : (
                   editItems.map((item, idx) => (
                     <div
-                      key={item.productId}
+                      key={item.key}
                       className="grid grid-cols-[1fr_80px_100px_90px_80px_40px] gap-2 px-3 py-2 items-center border-t border-border/30 hover:bg-muted/20 transition-colors"
                     >
                       <div>
@@ -693,7 +897,7 @@ export default function POSTerminal() {
                           onClick={() =>
                             setEditItems((prev) =>
                               prev.map((i) =>
-                                i.productId === item.productId && i.quantity > 1
+                                i.key === item.key && i.quantity > 1
                                   ? { ...i, quantity: i.quantity - 1 }
                                   : i
                               )
@@ -710,7 +914,7 @@ export default function POSTerminal() {
                             const val = parseInt(e.target.value) || 1;
                             setEditItems((prev) =>
                               prev.map((i) =>
-                                i.productId === item.productId ? { ...i, quantity: Math.max(1, val) } : i
+                                i.key === item.key ? { ...i, quantity: Math.max(1, val) } : i
                               )
                             );
                           }}
@@ -722,7 +926,7 @@ export default function POSTerminal() {
                           onClick={() =>
                             setEditItems((prev) =>
                               prev.map((i) =>
-                                i.productId === item.productId ? { ...i, quantity: i.quantity + 1 } : i
+                                i.key === item.key ? { ...i, quantity: i.quantity + 1 } : i
                               )
                             )
                           }
@@ -739,7 +943,7 @@ export default function POSTerminal() {
                           const val = parseFloat(e.target.value) || 0;
                           setEditItems((prev) =>
                             prev.map((i) =>
-                              i.productId === item.productId ? { ...i, unitPrice: Math.max(0, val) } : i
+                              i.key === item.key ? { ...i, unitPrice: Math.max(0, val) } : i
                             )
                           );
                         }}
@@ -754,7 +958,7 @@ export default function POSTerminal() {
                           const val = parseFloat(e.target.value) || 0;
                           setEditItems((prev) =>
                             prev.map((i) =>
-                              i.productId === item.productId ? { ...i, discountAmount: Math.max(0, val) } : i
+                              i.key === item.key ? { ...i, discountAmount: Math.max(0, val) } : i
                             )
                           );
                         }}
@@ -768,7 +972,7 @@ export default function POSTerminal() {
                         className="w-7 h-7 rounded flex items-center justify-center text-destructive/70 hover:text-destructive hover:bg-destructive/10 transition-colors"
                         onClick={() =>
                           setEditItems((prev) =>
-                            prev.filter((i) => i.productId !== item.productId)
+                            prev.filter((i) => i.key !== item.key)
                           )
                         }
                       >
@@ -811,7 +1015,13 @@ export default function POSTerminal() {
             {/* Client Info & Payment */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div className="space-y-1">
-                <Label className="text-xs">Select Customer (Optional)</Label>
+                <Label className="text-xs">
+                  {editPaymentMethod === 'credit' ? (
+                    <>Customer <span className="text-destructive">*</span></>
+                  ) : (
+                    'Select Customer (Optional)'
+                  )}
+                </Label>
                 <Select
                   value={editCustomerId}
                   onValueChange={(val) => {
@@ -849,7 +1059,7 @@ export default function POSTerminal() {
                 <select
                   title="Payment Method"
                   value={editPaymentMethod}
-                  onChange={(e) => setEditPaymentMethod(e.target.value)}
+                  onChange={(e) => setEditPaymentMethod(e.target.value as PaymentMethod)}
                   className="w-full h-9 text-sm rounded-md border border-input bg-background px-3 py-1 text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
                 >
                   <option value="cash">Cash</option>
@@ -858,6 +1068,11 @@ export default function POSTerminal() {
                   <option value="credit">Credit</option>
                 </select>
               </div>
+              {editNeedsCustomer && (
+                <p className="sm:col-span-2 text-xs text-destructive">
+                  A credit bill goes on a customer's account: choose the customer, or pick another payment method.
+                </p>
+              )}
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -955,8 +1170,8 @@ export default function POSTerminal() {
           {/* Footer Actions */}
           <div className="flex justify-end gap-2 pt-3 border-t border-border/50">
             <Button variant="outline" onClick={() => setIsEditBillDialogOpen(false)}>Cancel</Button>
-            <Button onClick={handleSaveBillEdit} disabled={editItems.length === 0}>
-              Save Changes
+            <Button onClick={handleSaveBillEdit} disabled={editItems.length === 0 || editNeedsCustomer || isSavingEdit}>
+              {isSavingEdit ? 'Saving...' : 'Save Changes'}
             </Button>
           </div>
         </DialogContent>
@@ -980,18 +1195,41 @@ export default function POSTerminal() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
                 </svg>
               </div>
-              <h2 className="text-xl sm:text-2xl font-bold text-foreground">Transaction Complete</h2>
+              <h2 className="text-xl sm:text-2xl font-bold text-foreground">
+                {isExchangeOrder(lastOrder) ? 'Exchange Complete' : 'Transaction Complete'}
+              </h2>
+              {lastOrder.originalOrderId && (
+                <p className="text-sm text-muted-foreground mt-1">
+                  Exchange #{billNumber(lastOrder.id)} for bill #{billNumber(lastOrder.originalOrderId)}
+                </p>
+              )}
               <p className="text-sm text-muted-foreground mt-1">Print a receipt for the customer?</p>
               {lastOrder.clientName && (
                 <p className="text-sm text-muted-foreground mt-1">Customer: {lastOrder.clientName}</p>
               )}
             </div>
-            
+
             <div className="bg-muted/30 p-4 sm:p-6 rounded-xl mb-6 text-center border border-border/50">
-              <p className="text-sm text-muted-foreground mb-1">Total Amount</p>
-              <p className="text-2xl sm:text-3xl font-bold text-primary mb-4">
-                {formatPKR(lastOrder.totalAmount)}
-              </p>
+              {(() => {
+                // An exchange shows which way the money went instead of a (possibly negative) total.
+                const total = lastOrder.totalAmount;
+                const toAccount = lastOrder.paymentMethod === 'credit';
+                const label = !isExchangeOrder(lastOrder)
+                  ? 'Total Amount'
+                  : total > 0.005
+                    ? toAccount ? 'Added to customer account' : 'Customer pays'
+                    : total < -0.005
+                      ? toAccount ? 'Refunded to customer account' : 'Refund to customer'
+                      : 'Even exchange';
+                return (
+                  <>
+                    <p className="text-sm text-muted-foreground mb-1">{label}</p>
+                    <p className="text-2xl sm:text-3xl font-bold text-primary mb-4">
+                      {formatPKR(isExchangeOrder(lastOrder) ? Math.abs(total) : total)}
+                    </p>
+                  </>
+                );
+              })()}
               
               <div className="grid grid-cols-2 gap-2 text-xs sm:text-sm text-muted-foreground border-t border-border/50 pt-4">
                 <div>
@@ -1020,7 +1258,9 @@ export default function POSTerminal() {
 
               {lastOrder.status === 'credit' && (
                 <div className="mt-4 p-2 bg-warning/20 rounded-lg border border-warning/30">
-                  <p className="text-warning text-sm font-medium">⚠️ Credit Sale - Payment Pending</p>
+                  <p className="text-warning text-sm font-medium">
+                    ⚠️ {isExchangeOrder(lastOrder) ? 'Added to customer account' : 'Credit Sale'} - Payment Pending
+                  </p>
                 </div>
               )}
             </div>
@@ -1052,9 +1292,19 @@ export default function POSTerminal() {
               <Button
                 className="col-span-2 h-10 bg-green-600 hover:bg-green-700 text-white"
                 onClick={() => {
-                  const text = encodeURIComponent(
-                    `*${lastOrder.id.slice(-8).toUpperCase()}*\nTotal: ${formatPKR(lastOrder.totalAmount)}\nPayment: ${lastOrder.paymentMethod.toUpperCase()}${lastOrder.clientName ? `\nCustomer: ${lastOrder.clientName}` : ''}\nThank you for your purchase!`
-                  );
+                  const body = lastOrder.originalOrderId
+                    ? [
+                        `*Exchange ${billNumber(lastOrder.id)}* for bill #${billNumber(lastOrder.originalOrderId)}`,
+                        ...exchangeShareLines(lastOrder, getOrderItems(lastOrder.id), formatPKR),
+                      ]
+                    : [
+                        `*${billNumber(lastOrder.id)}*`,
+                        `Total: ${formatPKR(lastOrder.totalAmount)}`,
+                        `Payment: ${lastOrder.paymentMethod.toUpperCase()}`,
+                      ];
+                  if (lastOrder.clientName) body.push(`Customer: ${lastOrder.clientName}`);
+                  body.push('Thank you for your purchase!');
+                  const text = encodeURIComponent(body.join('\n'));
                   window.open(`https://wa.me/?text=${text}`, '_blank');
                 }}
               >
