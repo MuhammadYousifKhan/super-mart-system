@@ -33,7 +33,6 @@ import {
   Receipt as ReceiptIcon,
   XCircle,
   Pencil,
-  Calculator,
   Trash2,
   Plus,
   Minus,
@@ -47,7 +46,7 @@ import { Order, PaymentMethod, Product } from '@/types/pos';
 import { recordScanTime } from '@/lib/perfStats';
 import { ProductCard } from '@/components/pos/ProductCard';
 import { format } from 'date-fns';
-import { POSNumpad } from '@/components/pos/POSNumpad';
+import { CartPanel } from '@/components/pos/CartPanel';
 import { computeEditedOrderTotals, exchangeShareLines } from '@/lib/orderMath';
 import {
   billNumber,
@@ -113,7 +112,6 @@ export default function POSTerminal() {
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [editClientName, setEditClientName] = useState('');
   const [editClientPhone, setEditClientPhone] = useState('');
-  const [isNumpadVisible, setIsNumpadVisible] = useState(true);
   const [showEditHistory, setShowEditHistory] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -602,18 +600,7 @@ export default function POSTerminal() {
         
         {/* Bill Management */}
         <div className="flex justify-between items-center mt-4 px-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            className={cn(
-              "text-xs gap-2",
-              isNumpadVisible ? "text-primary bg-primary/10" : "text-muted-foreground"
-            )}
-            onClick={() => setIsNumpadVisible(!isNumpadVisible)}
-          >
-            <Calculator className="w-4 h-4" />
-            {isNumpadVisible ? "Hide Numpad" : "Show Numpad"}
-          </Button>
+          <span />
           <Button 
             variant="outline" 
             size="sm" 
@@ -664,8 +651,8 @@ export default function POSTerminal() {
         )}
       </div>
 
-      {/* Bottom Cart Button */}
-      <div className="p-6 border-t border-border/50 bg-background/60 backdrop-blur-md">
+      {/* Bottom Cart Button (narrow windows only; wide windows show the cart beside the products) */}
+      <div className="p-6 border-t lg:hidden border-border/50 bg-background/60 backdrop-blur-md">
         <Button
           size="lg"
           className="w-full h-16 text-lg relative overflow-hidden group bg-primary hover:bg-primary/90 text-primary-foreground shadow-[0_0_20px_hsl(var(--primary)/0.3)] hover:shadow-[0_0_30px_hsl(var(--primary)/0.5)] transition-all duration-300 rounded-xl"
@@ -688,12 +675,16 @@ export default function POSTerminal() {
       </div>
       </div>
 
-      {/* Right Sidebar Numpad */}
-      {isNumpadVisible && (
-        <div className="hidden lg:block">
-          <POSNumpad />
+      {/* The cart, always visible beside the products on wide windows */}
+      <aside className="hidden h-full w-96 shrink-0 flex-col border-l border-border/50 bg-card lg:flex">
+        <div className="flex items-center gap-2 border-b p-4 font-semibold">
+          <ShoppingCart className="h-5 w-5" />
+          Cart ({cartItemsCount} items)
         </div>
-      )}
+        <div className="min-h-0 flex-1">
+          <CartPanel onCheckout={() => setIsCheckoutOpen(true)} />
+        </div>
+      </aside>
       {/* Cart Drawer */}
       <CartDrawer
         open={isCartOpen}
