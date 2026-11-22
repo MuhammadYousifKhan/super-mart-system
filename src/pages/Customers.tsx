@@ -1,5 +1,12 @@
 import { todayLocal, toLocalISODate } from '@/lib/dates';
-import { applyCustomerLedger, customerPaymentCharges, parseAmount } from '@/lib/ledger';
+import {
+  applyCustomerLedger,
+  customerPaymentCharges,
+  isOpeningBalance,
+  parseAmount,
+  type OpeningBalanceDirection,
+} from '@/lib/ledger';
+import { useAuth } from '@/contexts/useAuth';
 import { escapeHtml } from '@/lib/orderMath';
 import { useState } from 'react';
 import { useStore } from '@/contexts/useStore';
@@ -72,6 +79,7 @@ export default function Customers() {
     customerTransactions,
     customerReminders,
     addCustomer,
+    addCustomerOpeningBalance,
     updateCustomer,
     deleteCustomer,
     getCustomerTransactions,
@@ -87,6 +95,7 @@ export default function Customers() {
     settings,
   } = useStore();
 
+  const { isAdmin } = useAuth();
   const [searchTerm, setSearchTerm] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
@@ -108,6 +117,15 @@ export default function Customers() {
     address: '',
     nic: '',
   });
+
+  // Opening balance (carried over from the old ledger book): used by Add Customer and "Set opening balance"
+  const [openingForm, setOpeningForm] = useState<OpeningBalanceFormState>(() => ({
+    amount: '',
+    direction: 'owes',
+    date: todayLocal(),
+    note: '',
+  }));
+  const [showOpeningModal, setShowOpeningModal] = useState(false);
 
   // Payment form state
   const [paymentAmount, setPaymentAmount] = useState('');
@@ -148,6 +166,7 @@ export default function Customers() {
 
   const resetForm = () => {
     setFormData({ name: '', phone: '', address: '', nic: '' });
+    setOpeningForm({ amount: '', direction: 'owes', date: todayLocal(), note: '' });
   };
 
   const handleAddCustomer = () => {
@@ -164,16 +183,50 @@ export default function Customers() {
       return;
     }
 
-    addCustomer({
-      name: formData.name.trim(),
-      phone: formData.phone.trim(),
-      address: formData.address.trim(),
-      nic: formData.nic.trim() || undefined,
-    });
+    // The opening balance is optional (admin only); an amount typed in must be valid.
+    let opening: { amount: number; direction: OpeningBalanceDirection; asOfDate: string; note?: string } | undefined;
+    if (isAdmin && openingForm.amount.trim()) {
+      const amount = parseAmount(openingForm.amount);
+      if (amount === null) {
+        toast.error('Enter the previous balance above 0 with at most 2 decimals, or leave it empty');
+        return;
+      }
+      opening = { amount, direction: openingForm.direction, asOfDate: openingForm.date, note: openingForm.note };
+    }
+
+    const added = addCustomer(
+      {
+        name: formData.name.trim(),
+        phone: formData.phone.trim(),
+        address: formData.address.trim(),
+        nic: formData.nic.trim() || undefined,
+      },
+      opening
+    );
+    if (!added) return;
 
     toast.success('Customer added successfully');
     setShowAddModal(false);
     resetForm();
+  };
+
+  const handleSetOpeningBalance = () => {
+    if (!selectedCustomer) return;
+    const amount = parseAmount(openingForm.amount);
+    if (amount === null) {
+      toast.error('Enter an amount above 0 with at most 2 decimals');
+      return;
+    }
+    const saved = addCustomerOpeningBalance(selectedCustomer.id, {
+      amount,
+      direction: openingForm.direction,
+      asOfDate: openingForm.date,
+      note: openingForm.note,
+    });
+    if (!saved) return;
+    toast.success('Opening balance recorded');
+    setShowOpeningModal(false);
+    setOpeningForm({ amount: '', direction: 'owes', date: todayLocal(), note: '' });
   };
 
   const handleEditCustomer = () => {
@@ -344,7 +397,10 @@ export default function Customers() {
         amount: editAmount,
         description: editTransactionForm.description,
         date: editTransactionForm.date,
-        ...(editingTransaction.type === 'payment' ? { paymentMethod: editTransactionForm.paymentMethod } : {}),
+        // An opening balance has no payment method (it is not money taken today).
+        ...(editingTransaction.type === 'payment' && !isOpeningBalance(editingTransaction)
+          ? { paymentMethod: editTransactionForm.paymentMethod }
+          : {}),
       });
     }
     if (!saved) return;
@@ -1086,6 +1142,17 @@ export default function Customers() {
                 />
               </div>
             </div>
+            {isAdmin && (
+              <div className="space-y-3 rounded-lg border border-border/50 p-3">
+                <div>
+                  <p className="text-sm font-medium text-foreground">Previous balance (from old ledger book)</p>
+                  <p className="text-xs text-muted-foreground">
+                    Optional. Leave the amount empty for a new customer with nothing owed.
+                  </p>
+                </div>
+                <OpeningBalanceFields value={openingForm} onChange={setOpeningForm} />
+              </div>
+            )}
           </div>
           <DialogFooter>
             <Button
@@ -1249,6 +1316,23 @@ export default function Customers() {
               </div>
             )}
 
+            {isAdmin &&
+              liveSelectedCustomer &&
+              !getCustomerTransactions(liveSelectedCustomer.id).some(isOpeningBalance) && (
+                <div className="mb-3 flex justify-end">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setOpeningForm({ amount: '', direction: 'owes', date: todayLocal(), note: '' });
+                      setShowOpeningModal(true);
+                    }}
+                  >
+                    Set opening balance
+                  </Button>
+                </div>
+              )}
+
             {/* Transaction List */}
             <ScrollArea className="h-[300px] rounded-lg border border-border/50">
               {selectedCustomer && (
@@ -1286,6 +1370,11 @@ export default function Customers() {
                             <div>
                               <p className="text-sm font-medium">
                                 {transaction.description}
+                                {isOpeningBalance(transaction) && (
+                                  <Badge variant="outline" className="ml-2 px-1.5 py-0 text-[10px] align-middle">
+                                    Opening balance
+                                  </Badge>
+                                )}
                                 {transaction.orderId && (
                                   <Badge
                                     variant="outline"
@@ -1381,6 +1470,28 @@ export default function Customers() {
       </Dialog>
 
       {/* Payment Modal */}
+      {/* Opening balance for a customer added without one */}
+      <Dialog open={showOpeningModal} onOpenChange={setShowOpeningModal}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Set opening balance</DialogTitle>
+            <DialogDescription>
+              The balance {selectedCustomer?.name} had in the old ledger book. It is added to the ledger as one dated entry,
+              and can only be set once.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-2">
+            <OpeningBalanceFields value={openingForm} onChange={setOpeningForm} />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowOpeningModal(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleSetOpeningBalance}>Save opening balance</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={showPaymentModal} onOpenChange={setShowPaymentModal}>
         <DialogContent>
           <DialogHeader>
@@ -1698,7 +1809,7 @@ export default function Customers() {
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-3">
-                    {editingTransaction.type === 'payment' && (
+                    {editingTransaction.type === 'payment' && !isOpeningBalance(editingTransaction) && (
                       <div className="space-y-2">
                         <Label>Payment Method</Label>
                         <Select
@@ -1793,6 +1904,77 @@ export default function Customers() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+    </div>
+  );
+}
+
+
+interface OpeningBalanceFormState {
+  amount: string;
+  direction: OpeningBalanceDirection;
+  date: string;
+  note: string;
+}
+
+/** Amount, direction, "as of" date and note for a balance carried over from the old ledger book. */
+function OpeningBalanceFields({
+  value,
+  onChange,
+}: {
+  value: OpeningBalanceFormState;
+  onChange: (next: OpeningBalanceFormState) => void;
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-2">
+        <Button
+          type="button"
+          variant={value.direction === 'owes' ? 'default' : 'outline'}
+          onClick={() => onChange({ ...value, direction: 'owes' })}
+        >
+          Customer owes us
+        </Button>
+        <Button
+          type="button"
+          variant={value.direction === 'advance' ? 'default' : 'outline'}
+          onClick={() => onChange({ ...value, direction: 'advance' })}
+        >
+          Advance (we owe them)
+        </Button>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-2">
+          <Label>Amount (Rs.)</Label>
+          <Input
+            type="number"
+            min="0"
+            step="0.01"
+            value={value.amount}
+            onChange={(e) => onChange({ ...value, amount: e.target.value })}
+            placeholder="e.g. 15000"
+            className="bg-muted/20 border-border/50"
+          />
+        </div>
+        <div className="space-y-2">
+          <Label>As of date</Label>
+          <Input
+            type="date"
+            max={todayLocal()}
+            value={value.date}
+            onChange={(e) => onChange({ ...value, date: e.target.value })}
+            className="bg-muted/20 border-border/50"
+          />
+        </div>
+      </div>
+      <div className="space-y-2">
+        <Label>Note (optional)</Label>
+        <Input
+          value={value.note}
+          onChange={(e) => onChange({ ...value, note: e.target.value })}
+          placeholder="e.g. Book page 14"
+          className="bg-muted/20 border-border/50"
+        />
+      </div>
     </div>
   );
 }

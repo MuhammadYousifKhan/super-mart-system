@@ -1,5 +1,6 @@
 import { todayLocal } from '@/lib/dates';
 import { applySupplierLedger, isStockIntakeEntry, parseAmount } from '@/lib/ledger';
+import { useAuth } from '@/contexts/useAuth';
 import { escapeHtml } from '@/lib/orderMath';
 import { useMemo, useState } from 'react';
 import { useStore } from '@/contexts/useStore';
@@ -52,7 +53,10 @@ function formatPKR(amount: number) {
   return `Rs. ${amount.toLocaleString()}`;
 }
 
+type EntryType = 'purchase' | 'payment' | 'opening-owe' | 'opening-advance';
+
 export default function Suppliers() {
+  const { isAdmin } = useAuth();
   const {
     suppliers,
     supplierPurchases,
@@ -62,6 +66,7 @@ export default function Suppliers() {
     deleteSupplier,
     getSupplierById,
     addSupplierPurchase,
+    addSupplierOpeningBalance,
     updateSupplierPurchase,
     deleteSupplierPurchase,
     getSupplierPurchases,
@@ -118,7 +123,7 @@ export default function Suppliers() {
 
   const [purchaseForm, setPurchaseForm] = useState({
     supplierId: '',
-    entryType: 'purchase' as 'purchase' | 'payment',
+    entryType: 'purchase' as EntryType,
     description: '',
     amount: '',
     purchaseDate: todayLocal(),
@@ -211,6 +216,24 @@ export default function Suppliers() {
 
   const submitPurchase = () => {
     const amount = parseAmount(purchaseForm.amount);
+    const isOpening = purchaseForm.entryType === 'opening-owe' || purchaseForm.entryType === 'opening-advance';
+    if (isOpening) {
+      if (!purchaseForm.supplierId || amount === null || !purchaseForm.purchaseDate) {
+        toast.error('Supplier, a valid amount (above 0, at most 2 decimals) and the "as of" date are required');
+        return;
+      }
+      // The description field is the optional note, and the invoice number is not used.
+      const saved = addSupplierOpeningBalance(purchaseForm.supplierId, {
+        amount,
+        direction: purchaseForm.entryType === 'opening-owe' ? 'owes' : 'advance',
+        asOfDate: purchaseForm.purchaseDate,
+        note: purchaseForm.description,
+      });
+      if (!saved) return;
+      toast.success('Opening balance recorded');
+      setPurchaseForm({ ...purchaseForm, entryType: 'purchase', description: '', amount: '', purchaseDate: todayLocal(), invoiceNumber: '' });
+      return;
+    }
     const isPayment = purchaseForm.entryType === 'payment';
     if (!purchaseForm.supplierId || (!isPayment && !purchaseForm.description.trim()) || amount === null) {
       toast.error(
@@ -938,7 +961,7 @@ export default function Suppliers() {
                 <Label>Entry Type</Label>
                 <Select
                   value={purchaseForm.entryType}
-                  onValueChange={(value) => setPurchaseForm({ ...purchaseForm, entryType: value as 'purchase' | 'payment' })}
+                  onValueChange={(value) => setPurchaseForm({ ...purchaseForm, entryType: value as EntryType })}
                 >
                   <SelectTrigger>
                     <SelectValue />
@@ -946,6 +969,8 @@ export default function Suppliers() {
                   <SelectContent>
                     <SelectItem value="purchase">Purchase (invoice)</SelectItem>
                     <SelectItem value="payment">Payment to supplier</SelectItem>
+                    {isAdmin && <SelectItem value="opening-owe">Opening balance: we owe them</SelectItem>}
+                    {isAdmin && <SelectItem value="opening-advance">Opening balance: we paid in advance</SelectItem>}
                   </SelectContent>
                 </Select>
               </div>
@@ -954,11 +979,17 @@ export default function Suppliers() {
                 <Input type="number" min="0" step="0.01" value={purchaseForm.amount} onChange={(e) => setPurchaseForm({ ...purchaseForm, amount: e.target.value })} />
               </div>
               <div className="space-y-2">
-                <Label>{purchaseForm.entryType === 'payment' ? 'Payment Date' : 'Purchase Date'}</Label>
+                <Label>
+                  {purchaseForm.entryType === 'payment'
+                    ? 'Payment Date'
+                    : purchaseForm.entryType.startsWith('opening')
+                      ? 'As of date (from the old book)'
+                      : 'Purchase Date'}
+                </Label>
                 <Input type="date" value={purchaseForm.purchaseDate} onChange={(e) => setPurchaseForm({ ...purchaseForm, purchaseDate: e.target.value })} />
               </div>
               <div className="space-y-2">
-                <Label>Description{purchaseForm.entryType === 'payment' ? ' (optional)' : ''}</Label>
+                <Label>Description{purchaseForm.entryType !== 'purchase' ? ' (optional note)' : ''}</Label>
                 <Input
                   value={purchaseForm.description}
                   onChange={(e) => setPurchaseForm({ ...purchaseForm, description: e.target.value })}
@@ -970,7 +1001,13 @@ export default function Suppliers() {
                 <Input value={purchaseForm.invoiceNumber} onChange={(e) => setPurchaseForm({ ...purchaseForm, invoiceNumber: e.target.value })} />
               </div>
               <div className="md:col-span-2">
-                <Button onClick={submitPurchase}>{purchaseForm.entryType === 'payment' ? 'Save Payment' : 'Save Purchase'}</Button>
+                <Button onClick={submitPurchase}>
+                  {purchaseForm.entryType === 'payment'
+                    ? 'Save Payment'
+                    : purchaseForm.entryType.startsWith('opening')
+                      ? 'Save Opening Balance'
+                      : 'Save Purchase'}
+                </Button>
               </div>
             </CardContent>
           </Card>
