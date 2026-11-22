@@ -35,7 +35,8 @@ import {
 } from '@/lib/syncQueueStore';
 import { startRemoteLogging } from '@/lib/remoteLog';
 import { recordCloudRefresh } from '@/lib/perfStats';
-import { describeSyncOp } from '@/lib/syncLabels';
+import { describeSyncOp, summarizeSyncOps } from '@/lib/syncLabels';
+import { overlayPendingRows } from '@/lib/pendingOverlay';
 import { logger, serializeError, type SerializedError } from '@/lib/logger';
 import { supabase, getCloudWriteActivity } from '@/lib/supabase';
 import {
@@ -1488,9 +1489,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const editLogsQueuedRef = useRef(new Set<string>());
 
   /** Replaces local data with the cloud copy, table by table, skipping tables that did not change. */
-  const applyCloudSnapshot = useCallback((snap: CloudSnapshot) => {
+  const applyCloudSnapshot = useCallback((cloudSnap: CloudSnapshot) => {
     const current = dataRef.current;
     const changed = (a: unknown, b: unknown) => JSON.stringify(a) !== JSON.stringify(b);
+    // Rows still waiting to upload from this PC (also ones set aside after errors) stay visible.
+    const snap: CloudSnapshot = { ...cloudSnap, ...overlayPendingRows(cloudSnap, current, pendingSyncOpsRef.current) };
     if (changed(current.categories, snap.categories)) setCategories(snap.categories);
     // Missing optional tables keep the local copy.
     if (snap.units && changed(current.units, snap.units)) setUnits(snap.units);
@@ -3955,7 +3958,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       toast.error(
         pending > 0
           ? `You are offline. ${pending} change${pending === 1 ? '' : 's'} saved on this device, waiting to sync.`
-          : 'You are offline.'
+          : 'You are offline.',
+        pending > 0 ? { description: `Remaining: ${summarizeSyncOps(pendingSyncOpsRef.current)}`, duration: 10000 } : undefined
       );
       return;
     }
@@ -3969,7 +3973,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     if (result.failed > 0) {
       const error = pendingSyncOpsRef.current.find((op) => op.lastError)?.lastError;
       toast.error(
-        `${result.failed} change${result.failed === 1 ? '' : 's'} could not be uploaded yet. They stay saved on this device and keep retrying.${error ? ` (${error})` : ''}`
+        `${result.failed} change${result.failed === 1 ? '' : 's'} could not be uploaded yet. They stay saved on this device and keep retrying.${error ? ` (${error})` : ''}`,
+        { description: `Remaining: ${summarizeSyncOps(pendingSyncOpsRef.current)}`, duration: 10000 }
       );
       return;
     }

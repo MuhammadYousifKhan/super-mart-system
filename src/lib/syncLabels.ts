@@ -31,6 +31,16 @@ const TYPE_LABELS: Record<string, string> = {
   stock_movement: 'Stock change',
 };
 
+/** Counts of what is still waiting, e.g. "2 × Sale, 1 × New product". */
+export function summarizeSyncOps(ops: { type: string }[]): string {
+  const counts = new Map<string, number>();
+  for (const op of ops) {
+    const label = TYPE_LABELS[op.type] ?? op.type;
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  return [...counts.entries()].map(([label, count]) => `${count} × ${label}`).join(', ');
+}
+
 /** What a waiting change is, in words a shop owner understands, e.g. "Sale #A1B2C3D4". */
 export function describeSyncOp(type: string, payload: unknown): string {
   const label = TYPE_LABELS[type] ?? type;

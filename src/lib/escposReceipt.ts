@@ -14,6 +14,9 @@ export interface ReceiptStoreSettings {
 
 const ESC = 0x1b;
 const GS = 0x1d;
+// Font A is 24 dots tall; printers default to 30-34 dots per line. 28 keeps a small gap between
+// lines (also on 180 dpi heads) while using noticeably less paper per receipt.
+const LINE_SPACING_DOTS = 28;
 
 // Thermal printers only know a handful of single-byte characters, so everything is reduced to
 // plain ASCII. Common typographic symbols get a sensible stand-in; anything else becomes '?'.
@@ -87,7 +90,9 @@ class EscPosBuilder {
   }
 
   init() {
-    return this.raw(ESC, 0x40, ESC, 0x74, 0x00); // reset, code page PC437
+    return this.raw(ESC, 0x40, ESC, 0x74, 0x00) // reset, code page PC437
+      .raw(GS, 0x50, 0, 203) // vertical motion unit 1/203 inch (one dot on 203 dpi printers)
+      .raw(ESC, 0x33, LINE_SPACING_DOTS); // tighter line spacing than the default ~1/6 inch
   }
 
   align(a: 'left' | 'center' | 'right') {
@@ -100,7 +105,8 @@ class EscPosBuilder {
 
   /** 1 = normal, 2 = double width and height. */
   size(n: 1 | 2) {
-    return this.raw(GS, 0x21, n === 2 ? 0x11 : 0x00);
+    // Line spacing follows the text height, so a double-height line never overlaps the next one.
+    return this.raw(GS, 0x21, n === 2 ? 0x11 : 0x00).raw(ESC, 0x33, LINE_SPACING_DOTS * n);
   }
 
   text(s: string) {
@@ -174,18 +180,17 @@ export function buildReceiptBytes(
   b.bold(false);
   if (settings.address) b.wrapped(settings.address);
   if (settings.phone) b.line(`Tel: ${settings.phone}`);
-  b.rule('=');
+  // Title and bill number share one line to save paper.
   if (breakdown.isExchange) {
-    b.bold(true).line('EXCHANGE / RETURN').line(`#${billNumber(order.id)}`).bold(false);
+    b.bold(true).wrapped(`EXCHANGE / RETURN #${billNumber(order.id)}`).bold(false);
     b.line(`Against bill #${billNumber(order.originalOrderId || '')}`);
   } else {
-    b.bold(true).line('INVOICE').line(`#${order.id.slice(-8).toUpperCase()}`).bold(false);
+    b.bold(true).line(`INVOICE #${order.id.slice(-8).toUpperCase()}`).bold(false);
   }
   b.align('left').rule('-');
 
   // Order info
-  b.row('Date:', format(created, 'dd MMM yyyy'));
-  b.row('Time:', format(created, 'hh:mm a'));
+  b.row(`Date: ${format(created, 'dd MMM yyyy')}`, format(created, 'hh:mm a'));
   b.row('Cashier:', order.cashierName || '');
   if (order.clientName) b.row('Customer:', order.clientName);
   if (order.clientPhone) b.row('Phone:', order.clientPhone);
@@ -200,46 +205,57 @@ export function buildReceiptBytes(
   // Footer
   b.rule('-').align('center');
   if (settings.receiptFooterMessage) b.bold(true).wrapped(settings.receiptFooterMessage).bold(false);
-  b.line(`Generated: ${format(new Date(), 'dd MMM yyyy hh:mm a')}`);
-  b.rule('-');
-  b.bold(true).line('Team Axioms').bold(false).line('Contact: 03367544180');
+  b.wrapped('Aceva Technology - +92 305 555 2230');
 
-  b.align('left').feed(3).cut();
+  // The cut command itself feeds the last line past the cutter, so no blank lines are added.
+  b.align('left').cut();
   return b.build();
+}
+
+/** One item: a single line when the quantity is 1, otherwise the name and then "qty x price". */
+function printItemLine(b: EscPosBuilder, index: number, name: string, quantity: number, unitPrice: number, total: string) {
+  if (quantity === 1) {
+    b.bold(true).row(`${index + 1}. ${name}`, total).bold(false);
+  } else {
+    b.bold(true).wrapped(`${index + 1}. ${name}`).bold(false);
+    b.row(`   ${quantity} x ${formatMoney(unitPrice)}`, total);
+  }
+}
+
+/** The grand total, in double size when it fits on a wide roll. */
+function printBigTotal(b: EscPosBuilder, label: string, value: string) {
+  const half = Math.floor(b.cols / 2);
+  b.bold(true);
+  if (b.cols >= 42 && label.length + 1 + value.length <= half) {
+    // Double size halves the column count, so build the row for cols / 2.
+    const gap = value ? Math.max(half - label.length - value.length, 1) : 0;
+    b.size(2).line(label + ' '.repeat(gap) + value).size(1);
+  } else {
+    b.row(label, value);
+  }
+  b.bold(false);
 }
 
 /** Items, totals and payment of a normal sale. */
 function printSaleBody(b: EscPosBuilder, order: Order, items: OrderItem[], breakdown: ReturnType<typeof getOrderBreakdown>) {
-  const cols = b.cols;
-
-  // Items
-  b.bold(true).line('ITEMS').bold(false).rule('-');
+  // Items (the rule above the list already separates them from the order info)
   items.forEach((item, i) => {
-    b.bold(true).wrapped(`${i + 1}. ${item.productName}`).bold(false);
     const lineTotal = item.unitPriceAtSale * item.quantity;
-    b.row(`   ${item.quantity} x ${formatMoney(item.unitPriceAtSale)}`, formatMoney(lineTotal));
+    printItemLine(b, i, item.productName, item.quantity, item.unitPriceAtSale, formatMoney(lineTotal));
     if (item.discountAmount > 0) b.row('   Item discount', `-${formatMoney(item.discountAmount)}`);
   });
   b.rule('-');
 
-  // Totals
-  b.row('Subtotal:', formatMoney(breakdown.subtotal));
-  if (breakdown.discount > 0) b.row('Discount:', `-${formatMoney(breakdown.discount)}`);
-  b.row(`Tax (${breakdown.taxRate}%):`, formatMoney(order.taxAmount));
-  if (breakdown.cardFee > 0) b.row(`Card Fee (${order.cardFeeRate ?? 0}%):`, formatMoney(breakdown.cardFee));
-  b.rule('=');
-  b.bold(true);
-  if (cols >= 42) {
-    // Double size halves the column count, so build the row for cols / 2.
-    const label = 'TOTAL:';
-    const value = formatMoney(order.totalAmount);
-    const half = Math.floor(cols / 2);
-    const gap = Math.max(half - label.length - value.length, 1);
-    b.size(2).line(label + ' '.repeat(gap) + value).size(1);
-  } else {
-    b.row('TOTAL:', formatMoney(order.totalAmount));
+  // Totals. Subtotal is only worth a line when something changes it; a zero tax is left out.
+  const hasTax = Math.abs(order.taxAmount) >= 0.005;
+  if (breakdown.discount > 0 || hasTax || breakdown.cardFee > 0) {
+    b.row('Subtotal:', formatMoney(breakdown.subtotal));
+    if (breakdown.discount > 0) b.row('Discount:', `-${formatMoney(breakdown.discount)}`);
+    if (hasTax) b.row(`Tax (${breakdown.taxRate}%):`, formatMoney(order.taxAmount));
+    if (breakdown.cardFee > 0) b.row(`Card Fee (${order.cardFeeRate ?? 0}%):`, formatMoney(breakdown.cardFee));
   }
-  b.bold(false).rule('=');
+  printBigTotal(b, 'TOTAL:', formatMoney(order.totalAmount));
+  b.rule('-');
 
   // Payment
   b.row('Payment:', `${order.paymentMethod.toUpperCase()}${order.transferType ? ` (${order.transferType.toUpperCase()})` : ''}`);
@@ -249,7 +265,7 @@ function printSaleBody(b: EscPosBuilder, order: Order, items: OrderItem[], break
     b.row('Change:', formatMoney(order.changeGiven || 0));
   }
   if (order.status === 'credit') {
-    b.rule('-').align('center').bold(true).line('*** CREDIT SALE ***').line('PAYMENT PENDING').bold(false).align('left');
+    b.align('center').bold(true).wrapped('*** CREDIT SALE - PAYMENT PENDING ***').bold(false).align('left');
   }
 }
 
@@ -261,10 +277,9 @@ function printExchangeBody(b: EscPosBuilder, order: Order, items: OrderItem[]) {
   const ex = getExchangeBreakdown(order, items);
 
   if (ex.returned.length > 0) {
-    b.bold(true).line('RETURNED').bold(false).rule('-');
+    b.bold(true).line('RETURNED:').bold(false);
     ex.returned.forEach((l, i) => {
-      b.bold(true).wrapped(`${i + 1}. ${l.item.productName}`).bold(false);
-      b.row(`   ${l.quantity} x ${formatMoney(l.item.unitPriceAtSale)}`, `-${formatMoney(l.gross)}`);
+      printItemLine(b, i, l.item.productName, l.quantity, l.item.unitPriceAtSale, `-${formatMoney(l.gross)}`);
       // The discount they had on these goods isn't refunded.
       if (l.discount > 0.005) b.row('   Less discount', `+${formatMoney(l.discount)}`);
     });
@@ -272,33 +287,23 @@ function printExchangeBody(b: EscPosBuilder, order: Order, items: OrderItem[]) {
   }
 
   if (ex.added.length > 0) {
-    b.bold(true).line('NEW ITEMS').bold(false).rule('-');
+    b.bold(true).line('NEW ITEMS:').bold(false);
     ex.added.forEach((l, i) => {
-      b.bold(true).wrapped(`${i + 1}. ${l.item.productName}`).bold(false);
-      b.row(`   ${l.quantity} x ${formatMoney(l.item.unitPriceAtSale)}`, formatMoney(l.gross));
+      printItemLine(b, i, l.item.productName, l.quantity, l.item.unitPriceAtSale, formatMoney(l.gross));
       if (l.discount > 0.005) b.row('   Item discount', `-${formatMoney(l.discount)}`);
     });
     b.rule('-');
   }
 
-  // Totals
+  // Totals (a zero tax is left out)
   b.row('Returned:', `-${formatMoney(ex.returnedNet)}`);
   if (ex.added.length > 0) b.row('New items:', formatMoney(ex.newNet));
-  b.row('Tax:', signedMoney(ex.tax));
+  if (Math.abs(ex.tax) >= 0.005) b.row('Tax:', signedMoney(ex.tax));
   if (ex.cardFee > 0) b.row(`Card Fee (${order.cardFeeRate ?? 0}%):`, formatMoney(ex.cardFee));
-  b.rule('=');
-  b.bold(true);
   const label = ex.settlement === 'Even exchange' ? 'EVEN EXCHANGE' : `${ex.settlement.toUpperCase()}:`;
   const value = ex.settlement === 'Even exchange' ? '' : formatMoney(ex.settlementAmount);
-  const half = Math.floor(b.cols / 2);
-  if (b.cols >= 42 && label.length + 1 + value.length <= half) {
-    // Double size halves the column count, so build the row for cols / 2.
-    const gap = value ? Math.max(half - label.length - value.length, 1) : 0;
-    b.size(2).line(label + ' '.repeat(gap) + value).size(1);
-  } else {
-    b.row(label, value);
-  }
-  b.bold(false).rule('=');
+  printBigTotal(b, label, value);
+  b.rule('-');
 
   // How the difference was settled
   if (ex.settledVia) b.row(`${ex.settledVia.label}:`, ex.settledVia.method.toUpperCase());
@@ -308,7 +313,7 @@ function printExchangeBody(b: EscPosBuilder, order: Order, items: OrderItem[]) {
     b.row('Change:', formatMoney(order.changeGiven || 0));
   }
   if (order.status === 'credit') {
-    b.rule('-').align('center').bold(true).line('*** ADDED TO ACCOUNT ***').line('PAYMENT PENDING').bold(false).align('left');
+    b.align('center').bold(true).wrapped('*** ADDED TO ACCOUNT - PAYMENT PENDING ***').bold(false).align('left');
   }
 }
 
@@ -324,7 +329,8 @@ export function buildTestPageBytes(storeName: string, printerName: string, cols:
   b.line(ruler);
   b.row('Left text', 'Right text');
   b.bold(true).line('Bold text').bold(false).line('Normal text');
-  b.rule('=').align('center').line('If you can read this, printing works.').align('left');
-  b.feed(3).cut();
+  b.rule('=').align('center').line('If you can read this, printing works.');
+  b.line('This last line must not be cut off.').align('left');
+  b.cut();
   return b.build();
 }

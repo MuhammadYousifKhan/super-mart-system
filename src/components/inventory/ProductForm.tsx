@@ -84,7 +84,9 @@ export function ProductForm({ product, onSuccess }: ProductFormProps) {
           lowStockThreshold: 10,
           expiryDate: '',
           barcode: '',
-          barcodeEnabled: false,
+          // On by default: a barcode typed in without ticking this box used to make the product
+          // impossible to scan. It does nothing while the barcode is empty.
+          barcodeEnabled: true,
         },
   });
 

@@ -54,6 +54,8 @@ function printHtmlReceipt(order: Order, items: OrderItemType[], settings: Receip
   const breakdown = getOrderBreakdown(order, items);
   // An exchange/return prints its own title and body; everything else is the normal invoice.
   const isExchange = breakdown.isExchange;
+  const hasTax = Math.abs(order.taxAmount) >= 0.005;
+  const hasAdjustments = breakdown.discount > 0 || hasTax || breakdown.cardFee > 0;
 
   printWindow.document.write(`
     <html>
@@ -64,73 +66,69 @@ function printHtmlReceipt(order: Order, items: OrderItemType[], settings: Receip
 
           * { margin: 0; padding: 0; box-sizing: border-box; }
 
+          /* Kept compact on purpose: every millimetre here is paper used on every sale. */
           body {
             font-family: 'Inter', 'Segoe UI', Arial, sans-serif;
             font-size: 11px;
             font-weight: 600;
-            line-height: 1.4;
+            line-height: 1.25;
             color: #000;
             width: 72mm;
             max-width: 72mm;
             margin: 0 auto;
-            padding: 6mm 4mm;
+            padding: 1mm 2mm;
             background: #fff;
           }
 
           .receipt-header {
             text-align: center;
-            padding-bottom: 8px;
-            border-bottom: 2px solid #000;
-            margin-bottom: 8px;
+            padding-bottom: 2px;
+            margin-bottom: 2px;
           }
 
           .store-name {
-            font-size: 17px;
+            font-size: 16px;
             font-weight: 800;
-            letter-spacing: 1px;
+            letter-spacing: 0.5px;
             text-transform: uppercase;
-            margin-bottom: 2px;
           }
 
           .store-details {
             font-size: 10px;
             font-weight: 700;
             color: #000;
-            line-height: 1.5;
           }
 
           .invoice-title {
             text-align: center;
-            margin: 10px 0;
-            padding: 6px 0;
+            margin: 2px 0;
+            padding: 1px 0;
             background: #000;
             color: #fff;
-            font-size: 12px;
+            font-size: 11px;
             font-weight: 700;
-            letter-spacing: 2px;
+            letter-spacing: 1px;
             text-transform: uppercase;
-            border-radius: 2px;
           }
 
           .invoice-number {
             text-align: center;
-            font-size: 11px;
+            font-size: 10px;
             font-weight: 700;
             color: #000;
-            margin-bottom: 8px;
+            margin-bottom: 2px;
           }
 
           .order-info {
-            padding: 8px 0;
-            border-bottom: 2px dashed #000;
-            margin-bottom: 8px;
+            padding-bottom: 2px;
+            border-bottom: 1px dashed #000;
+            margin-bottom: 2px;
           }
 
           .info-row {
             display: flex;
             justify-content: space-between;
             align-items: flex-start;
-            padding: 2px 0;
             font-size: 10px;
           }
 
@@ -148,31 +146,26 @@ function printHtmlReceipt(order: Order, items: OrderItemType[], settings: Receip
           }
 
           .items-header {
-            text-align: center;
             font-size: 10px;
-            font-weight: 700;
-            letter-spacing: 1.5px;
+            font-weight: 800;
             text-transform: uppercase;
-            margin: 8px 0 4px;
-            padding: 5px 0;
-            border-top: 2px dashed #000;
-            border-bottom: 2px dashed #000;
+            margin-top: 2px;
           }
 
           .item-table {
             width: 100%;
             border-collapse: collapse;
-            margin-bottom: 8px;
+            margin-bottom: 2px;
           }
 
           .item-table th {
             font-size: 9px;
             font-weight: 800;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
-            padding: 4px 2px;
-            border-bottom: 2px solid #000;
+            padding: 0 2px 1px;
+            border-bottom: 1px solid #000;
             color: #000;
+            text-align: left;
           }
 
           .item-table th:last-child,
@@ -188,7 +181,7 @@ function printHtmlReceipt(order: Order, items: OrderItemType[], settings: Receip
           .item-table td {
             font-size: 10px;
             font-weight: 700;
-            padding: 4px 2px;
+            padding: 1px 2px;
             border-bottom: 1px dotted #000;
             vertical-align: top;
           }
@@ -197,35 +190,18 @@ function printHtmlReceipt(order: Order, items: OrderItemType[], settings: Receip
             font-weight: 800;
           }
 
-          .item-sku {
-            font-size: 8px;
+          .item-meta {
+            font-size: 9px;
             font-weight: 700;
-            color: #222;
-            font-family: monospace;
           }
 
           .summary-section {
-            margin: 10px 0;
-            padding: 8px;
-            border: 2px solid #000;
-            border-radius: 3px;
-          }
-
-          .summary-title {
-            text-align: center;
-            font-size: 10px;
-            font-weight: 700;
-            letter-spacing: 1.5px;
-            text-transform: uppercase;
-            margin-bottom: 6px;
-            padding-bottom: 4px;
-            border-bottom: 1.5px solid #000;
+            margin: 2px 0;
           }
 
           .summary-row {
             display: flex;
             justify-content: space-between;
-            padding: 2px 0;
             font-size: 10px;
             font-weight: 700;
           }
@@ -236,72 +212,44 @@ function printHtmlReceipt(order: Order, items: OrderItemType[], settings: Receip
           }
 
           .summary-row.grand-total {
-            margin-top: 4px;
-            padding-top: 6px;
-            border-top: 2px solid #000;
+            margin-top: 1px;
+            padding-top: 1px;
+            border-top: 1px solid #000;
             font-size: 14px;
             font-weight: 800;
           }
 
           .payment-info {
-            margin: 8px 0;
-            padding: 6px 0;
-            border-top: 2px dashed #000;
-            border-bottom: 2px dashed #000;
+            margin: 2px 0;
+            padding-top: 2px;
+            border-top: 1px dashed #000;
           }
 
           .credit-warning {
             text-align: center;
-            padding: 6px;
-            margin: 8px 0;
-            border: 2px solid #000;
+            padding: 1px;
+            margin: 2px 0;
+            border: 1px solid #000;
             font-weight: 800;
-            font-size: 11px;
+            font-size: 10px;
             text-transform: uppercase;
-            letter-spacing: 1px;
           }
 
           .receipt-footer {
-            margin-top: 12px;
-            padding-top: 8px;
-            border-top: 2px solid #000;
+            margin-top: 2px;
+            padding-top: 2px;
+            border-top: 1px dashed #000;
             text-align: center;
           }
 
           .footer-message {
-            font-size: 11px;
-            font-weight: 700;
-            margin-bottom: 4px;
-          }
-
-          .footer-generated {
-            font-size: 9px;
-            font-weight: 700;
-            color: #222;
-            margin-top: 4px;
-          }
-
-          .divider-dots {
-            text-align: center;
-            letter-spacing: 3px;
-            color: #000;
-            font-size: 8px;
-            margin: 4px 0;
-          }
-
-          .footer-credit {
-            margin-top: 8px;
-            padding-top: 6px;
-            border-top: 2px solid #000;
-            text-align: center;
             font-size: 10px;
             font-weight: 700;
           }
 
-          .footer-credit .team {
-            font-size: 12px;
-            font-weight: 800;
-            letter-spacing: 1px;
+          .footer-credit {
+            font-size: 9px;
+            font-weight: 700;
           }
 
           @media print {
@@ -312,7 +260,7 @@ function printHtmlReceipt(order: Order, items: OrderItemType[], settings: Receip
             body {
               width: 72mm;
               max-width: 72mm;
-              padding: 3mm;
+              padding: 1mm 2mm;
               -webkit-print-color-adjust: exact;
               print-color-adjust: exact;
             }
@@ -330,18 +278,13 @@ function printHtmlReceipt(order: Order, items: OrderItemType[], settings: Receip
         </div>
 
         <!-- Invoice Title -->
-        ${isExchange ? exchangeTitleHtml(order) : `<div class="invoice-title">Invoice</div>
-        <div class="invoice-number">#${order.id.slice(-8).toUpperCase()}</div>`}
+        ${isExchange ? exchangeTitleHtml(order) : `<div class="invoice-title">Invoice #${order.id.slice(-8).toUpperCase()}</div>`}
 
         <!-- Order Info -->
         <div class="order-info">
           <div class="info-row">
             <span class="label">Date:</span>
-            <span class="value">${orderDate}</span>
-          </div>
-          <div class="info-row">
-            <span class="label">Time:</span>
-            <span class="value">${orderTime}</span>
+            <span class="value">${orderDate}, ${orderTime}</span>
           </div>
           <div class="info-row">
             <span class="label">Cashier:</span>
@@ -360,7 +303,6 @@ function printHtmlReceipt(order: Order, items: OrderItemType[], settings: Receip
         </div>
 
         ${isExchange ? exchangeBodyHtml(order, items) : `<!-- Items -->
-        <div class="items-header">Items</div>
         <table class="item-table">
           <thead>
             <tr>
@@ -376,7 +318,7 @@ function printHtmlReceipt(order: Order, items: OrderItemType[], settings: Receip
                 <td>${index + 1}</td>
                 <td>
                   <div class="item-name">${esc(item.productName)}</div>
-                  <div class="item-sku">${esc(item.productSku)} · ${formatPKR(item.unitPriceAtSale)} ea</div>
+                  ${item.quantity !== 1 ? `<div class="item-meta">@ ${formatPKR(item.unitPriceAtSale)} ea</div>` : ''}
                 </td>
                 <td>${item.quantity}</td>
                 <td>${formatPKR(item.unitPriceAtSale * item.quantity)}</td>
@@ -385,22 +327,23 @@ function printHtmlReceipt(order: Order, items: OrderItemType[], settings: Receip
           </tbody>
         </table>
 
-        <!-- Totals -->
+        <!-- Totals: subtotal only when something changes it, and no zero tax line -->
         <div class="summary-section">
-          <div class="summary-title">Order Total</div>
+          ${hasAdjustments ? `
           <div class="summary-row">
             <span>Subtotal:</span>
             <span>${formatPKR(breakdown.subtotal)}</span>
-          </div>
+          </div>` : ''}
           ${breakdown.discount > 0 ? `
           <div class="summary-row discount">
             <span>Discount:</span>
             <span>-${formatPKR(breakdown.discount)}</span>
           </div>` : ''}
+          ${hasTax ? `
           <div class="summary-row">
             <span>Tax (${breakdown.taxRate}%):</span>
             <span>${formatPKR(order.taxAmount)}</span>
-          </div>
+          </div>` : ''}
           ${breakdown.cardFee > 0 ? `
           <div class="summary-row">
             <span>Card Fee (${order.cardFeeRate ?? 0}%):</span>
@@ -442,13 +385,8 @@ function printHtmlReceipt(order: Order, items: OrderItemType[], settings: Receip
 
         <!-- Footer -->
         <div class="receipt-footer">
-          <div class="footer-message">${esc(settings.receiptFooterMessage)}</div>
-          <div class="divider-dots">• • • • • • • • • • •</div>
-          <div class="footer-generated">Generated: ${new Date().toLocaleString()}</div>
-        </div>
-        <div class="footer-credit">
-          <div class="team">Team Axioms</div>
-          <div>Contact: 03367544180</div>
+          ${settings.receiptFooterMessage ? `<div class="footer-message">${esc(settings.receiptFooterMessage)}</div>` : ''}
+          <div class="footer-credit">Aceva Technology · +92 305 555 2230</div>
         </div>
       </body>
     </html>
@@ -469,8 +407,7 @@ function printHtmlReceipt(order: Order, items: OrderItemType[], settings: Receip
 const signedPKR = (amount: number) => (amount < 0 ? `-${formatPKR(-amount)}` : formatPKR(amount));
 
 function exchangeTitleHtml(order: Order): string {
-  return `<div class="invoice-title">Exchange / Return</div>
-        <div class="invoice-number">#${billNumber(order.id)}</div>
+  return `<div class="invoice-title">Exchange / Return #${billNumber(order.id)}</div>
         <div class="invoice-number">Against bill #${billNumber(order.originalOrderId || '')}</div>`;
 }
 
@@ -494,7 +431,7 @@ function exchangeItemsHtml(title: string, lines: ExchangeReceiptLine[], returned
                 <td>${index + 1}</td>
                 <td>
                   <div class="item-name">${esc(l.item.productName)}</div>
-                  <div class="item-sku">${esc(l.item.productSku)} · ${formatPKR(l.item.unitPriceAtSale)} ea${l.discount > 0.005 ? ` · less discount ${formatPKR(l.discount)}` : ''}</div>
+                  ${l.quantity !== 1 || l.discount > 0.005 ? `<div class="item-meta">@ ${formatPKR(l.item.unitPriceAtSale)} ea${l.discount > 0.005 ? ` · less discount ${formatPKR(l.discount)}` : ''}</div>` : ''}
                 </td>
                 <td>${l.quantity}</td>
                 <td>${returned ? '-' : ''}${formatPKR(l.net)}</td>
@@ -536,7 +473,6 @@ function exchangeBodyHtml(order: Order, items: OrderItemType[]): string {
         ${exchangeItemsHtml('New items', ex.added, false)}
 
         <div class="summary-section">
-          <div class="summary-title">Exchange Total</div>
           <div class="summary-row">
             <span>Returned:</span>
             <span>-${formatPKR(ex.returnedNet)}</span>
@@ -546,10 +482,11 @@ function exchangeBodyHtml(order: Order, items: OrderItemType[]): string {
             <span>New items:</span>
             <span>${formatPKR(ex.newNet)}</span>
           </div>` : ''}
+          ${Math.abs(ex.tax) >= 0.005 ? `
           <div class="summary-row">
             <span>Tax:</span>
             <span>${signedPKR(ex.tax)}</span>
-          </div>
+          </div>` : ''}
           ${ex.cardFee > 0 ? `
           <div class="summary-row">
             <span>Card Fee (${order.cardFeeRate ?? 0}%):</span>
@@ -603,7 +540,7 @@ export function Receipt({ order, showActions = false }: ReceiptProps) {
         text += `\nChange: ${formatPKR(order.changeGiven || 0)}`;
       }
       text += `\n\n${settings.receiptFooterMessage}`;
-      text += `\n\nTeam Axioms\nContact: 03367544180`;
+      text += `\n\nAceva Technology\nContact: +92 305 555 2230`;
       return text;
     }
     text += `Invoice: #${order.id.slice(-8).toUpperCase()}\n`;
@@ -643,7 +580,7 @@ export function Receipt({ order, showActions = false }: ReceiptProps) {
       text += `\n⚠️ *CREDIT SALE*`;
     }
     text += `\n\n${settings.receiptFooterMessage}`;
-    text += `\n\nTeam Axioms\nContact: 03367544180`;
+    text += `\n\nAceva Technology\nContact: +92 305 555 2230`;
     return text;
   };
 
