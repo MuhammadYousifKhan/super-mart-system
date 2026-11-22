@@ -17,6 +17,7 @@ import Customers from "./pages/Customers";
 import Suppliers from "./pages/Suppliers";
 import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 const queryClient = new QueryClient();
 
@@ -55,6 +56,7 @@ const App = () => (
       <TooltipProvider>
         <Toaster />
         <Sonner />
+        <ErrorBoundary>
         <HashRouter
           future={{
             v7_startTransition: true,
@@ -67,6 +69,7 @@ const App = () => (
             </StoreProvider>
           </AuthProvider>
         </HashRouter>
+        </ErrorBoundary>
       </TooltipProvider>
     </ThemeProvider>
   </QueryClientProvider>

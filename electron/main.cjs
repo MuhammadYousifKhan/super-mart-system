@@ -1,6 +1,7 @@
 const { app, BrowserWindow, shell, Menu, ipcMain } = require('electron');
 const path = require('path');
 const { printRaw } = require('./printer.cjs');
+const logger = require('./logger.cjs');
 
 // Only one copy of the POS may run at a time (two copies would fight over the local database).
 if (!app.requestSingleInstanceLock()) {
@@ -35,6 +36,7 @@ function createWindow() {
   });
 
   Menu.setApplicationMenu(null);
+  logger.watchWindow(mainWindow.webContents);
   mainWindow.once('ready-to-show', () => mainWindow.show());
 
   // Receipts/reports print through window.open('') + document.write, so blank
@@ -92,9 +94,40 @@ ipcMain.handle('printer:print', async (event, printerName, bytes) => {
   if (!printers.some((p) => p.name === printerName)) {
     throw new Error(`Printer "${printerName}" is not installed`);
   }
-  await printRaw(printerName, bytes);
+  try {
+    await printRaw(printerName, bytes);
+    logger.log('info', 'print', 'Receipt printed', { printer: printerName, bytes: bytes?.length });
+  } catch (err) {
+    logger.log('error', 'print', 'Printing failed', { printer: printerName, message: err?.message });
+    throw err;
+  }
 });
 
-app.whenReady().then(createWindow);
+// Log files: only the main POS window may write to them or export them.
+ipcMain.on('log:write', (event, entries) => {
+  if (!isFromMainWindow(event)) return;
+  logger.writeFromRenderer(entries);
+});
+
+ipcMain.handle('log:openFolder', async (event) => {
+  if (!isFromMainWindow(event)) throw new Error('Not allowed');
+  const dir = logger.getLogsDir();
+  if (!dir) throw new Error('Logging is not available');
+  const error = await shell.openPath(dir);
+  if (error) throw new Error(error);
+});
+
+ipcMain.handle('log:exportBundle', async (event, diagnostics) => {
+  if (!isFromMainWindow(event)) throw new Error('Not allowed');
+  const result = await logger.exportBundle(app, diagnostics);
+  shell.showItemInFolder(result);
+  return result;
+});
+
+app.whenReady().then(() => {
+  logger.init(app);
+  logger.installProcessHandlers(app);
+  createWindow();
+});
 
 app.on('window-all-closed', () => app.quit());
