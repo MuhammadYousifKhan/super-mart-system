@@ -10,6 +10,17 @@ if (!supabaseUrl || !supabaseAnonKey) {
 // With Wi-Fi connected but no internet, a request can hang for minutes. Give up after this long so
 // the change is queued on this device and retried instead of leaving the cashier waiting.
 const REQUEST_TIMEOUT_MS = 20000;
+// Slow shop internet: data reads (snapshot pages) and large uploads get longer before they count
+// as timed out, otherwise a big backlog would time out again and again and never finish.
+const BULK_REQUEST_TIMEOUT_MS = 45000;
+const BULK_BODY_BYTES = 50 * 1024;
+
+const timeoutFor = (url: string, isWrite: boolean, init: RequestInit): number => {
+  if (!url.includes('/rest/v1/')) return REQUEST_TIMEOUT_MS; // login and token refresh stay quick
+  if (!isWrite) return BULK_REQUEST_TIMEOUT_MS;
+  const size = typeof init.body === 'string' ? init.body.length : 0;
+  return size > BULK_BODY_BYTES ? BULK_REQUEST_TIMEOUT_MS : REQUEST_TIMEOUT_MS;
+};
 
 let writesInFlight = 0;
 let lastWriteStartedAt = 0;
@@ -18,8 +29,10 @@ const fetchWithTimeout = (input: RequestInfo | URL, init: RequestInit = {}): Pro
   const method = (init.method || (input instanceof Request ? input.method : 'GET')).toUpperCase();
   const isWrite = method !== 'GET' && method !== 'HEAD';
 
+  const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+  const timeoutMs = timeoutFor(url, isWrite, init);
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(new Error('Request timed out')), REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(new Error('Request timed out')), timeoutMs);
   const outer = init.signal;
   if (outer) {
     if (outer.aborted) controller.abort(outer.reason);

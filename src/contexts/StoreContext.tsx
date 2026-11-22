@@ -1,5 +1,5 @@
 import { todayLocal, nextDueDate, isValidLocalDate, toLocalISODate } from '@/lib/dates';
-import React, { useState, useEffect, useRef, useCallback, ReactNode, type Dispatch, type SetStateAction } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo, ReactNode, type Dispatch, type SetStateAction } from 'react';
 import {
   Product,
   Category,
@@ -23,6 +23,20 @@ import {
 } from '@/types/pos';
 import { useAuth } from './useAuth';
 import { StoreContext } from './StoreContextValue';
+import { classifySyncError, isConnectionProblem, isPermanentProblem, friendlySyncMessage, backoffDelayMs, chunk, type SyncErrorClass } from '@/lib/syncErrors';
+import {
+  finishLegacyMigration,
+  loadPersistedQueue,
+  onQueueSaveFailure,
+  orderQueue,
+  persistQueue,
+  readLegacyQueue,
+  setQueueLength,
+} from '@/lib/syncQueueStore';
+import { startRemoteLogging } from '@/lib/remoteLog';
+import { recordCloudRefresh } from '@/lib/perfStats';
+import { describeSyncOp } from '@/lib/syncLabels';
+import { logger, serializeError, type SerializedError } from '@/lib/logger';
 import { supabase, getCloudWriteActivity } from '@/lib/supabase';
 import {
   fetchCloudSnapshot,
@@ -48,6 +62,11 @@ import {
   editedCustomerTransaction,
   editedSupplierPurchase,
   isCreditReversal,
+  isOpeningBalance,
+  openingBalanceError,
+  buildOpeningBalanceEntry,
+  buildSupplierOpeningEntry,
+  type OpeningBalanceInput,
   isValidAmount,
 } from '@/lib/ledger';
 import { db, saveArrayToDexie, loadArrayFromDexie, saveSettingsToDexie, loadSettingsFromDexie } from '@/db/db';
@@ -130,7 +149,13 @@ export interface StoreContextType {
   customers: Customer[];
   customerTransactions: CustomerTransaction[];
   customerReminders: CustomerReminder[];
-  addCustomer: (customer: Omit<Customer, 'id' | 'createdAt' | 'totalCredit' | 'totalPaid' | 'balance'>) => void;
+  /** Returns false (nothing is added) when the optional opening balance is invalid. */
+  addCustomer: (
+    customer: Omit<Customer, 'id' | 'createdAt' | 'totalCredit' | 'totalPaid' | 'balance'>,
+    openingBalance?: OpeningBalanceInput
+  ) => boolean;
+  /** Records the balance carried over from the old ledger book. One per customer. */
+  addCustomerOpeningBalance: (customerId: string, input: OpeningBalanceInput) => boolean;
   updateCustomer: (id: string, customer: Partial<Customer>) => void;
   deleteCustomer: (id: string) => void;
   getCustomerById: (id: string) => Customer | undefined;
@@ -160,6 +185,8 @@ export interface StoreContextType {
   getSupplierById: (id: string) => Supplier | undefined;
   /** `amount` is negative for a payment to the supplier. */
   addSupplierPurchase: (purchase: Omit<SupplierPurchase, 'id' | 'createdAt'>) => boolean;
+  /** Records what the old ledger book says we owe a supplier (or paid in advance). One per supplier. */
+  addSupplierOpeningBalance: (supplierId: string, input: OpeningBalanceInput) => boolean;
   receiveSupplierStock: (input: {
     productId: string;
     supplierId: string;
@@ -250,6 +277,24 @@ export interface StoreContextType {
   calculateGlobalDiscountAmount: () => number;
   manualSync: () => Promise<void>;
   syncStatus: SyncStatus;
+  /** Changes saved on this PC and not yet in the cloud (for Settings > Diagnostics). */
+  syncQueue: SyncQueueItem[];
+  /** Removes a change that the database will never accept. Written to the log in full first. */
+  discardSyncOp: (id: string) => void;
+}
+
+export interface SyncQueueItem {
+  id: string;
+  type: string;
+  label: string;
+  createdAt: string;
+  retryCount: number;
+  parked: boolean;
+  lastError?: string;
+  lastErrorKind?: SyncErrorClass;
+  lastErrorDetail?: SerializedError;
+  lastAttemptAt?: string;
+  payload: unknown;
 }
 
 export interface SyncStatus {
@@ -265,6 +310,10 @@ export interface SyncStatus {
   needsDbUpdate: boolean;
   /** Receiving other PCs' changes instantly. */
   live: boolean;
+  /** Uploads are paused because this PC's login is no longer valid; sign in again. */
+  authPaused: boolean;
+  /** The change the queue is stuck on right now, if any. */
+  blocked: BlockedSyncInfo | null;
 }
 
 type PendingSyncOperationType =
@@ -299,6 +348,8 @@ type PendingSyncOperationType =
 
 interface PendingSyncOperation {
   id: string;
+  /** Upload order; see syncQueueStore. */
+  seq?: number;
   type: PendingSyncOperationType;
   payload: any;
   createdAt: string;
@@ -306,6 +357,26 @@ interface PendingSyncOperation {
   lastError?: string;
   /** Set aside after repeated database (not connection) errors so it can't block the queue. */
   parked?: boolean;
+  /** How the last failure was classified (network, auth, rls, schema, ...). */
+  lastErrorKind?: SyncErrorClass;
+  /** Full error details (code, details, hint, status) for Settings > Diagnostics. */
+  lastErrorDetail?: SerializedError;
+  /** When this change last failed. */
+  lastAttemptAt?: string;
+}
+
+/** The change holding up the queue, shown in the sidebar and in Diagnostics. */
+export interface BlockedSyncInfo {
+  opId: string;
+  type: string;
+  /** Readable name, e.g. "Sale #A1B2C3D4". */
+  label: string;
+  error: string;
+  kind: SyncErrorClass;
+  attempts: number;
+  /** When the queue first got stuck on it. */
+  since: string;
+  nextRetryAt: string | null;
 }
 
 interface SyncResult {
@@ -323,20 +394,6 @@ const DEFAULT_SETTINGS: StoreSettings = {
   receiptFooterMessage: 'Thank you for your purchase!',
   allowNegativeStock: false,
 };
-
-const PENDING_SYNC_STORAGE_KEY = 'pos_pending_sync_ops_v1';
-
-function loadPendingSyncQueue(): PendingSyncOperation[] {
-  if (typeof window === 'undefined') return [];
-  try {
-    const raw = localStorage.getItem(PENDING_SYNC_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
 
 function calculateNextReminderDate(currentDate: string, frequency: ReminderFrequency): string {
   return nextDueDate(currentDate, frequency);
@@ -507,10 +564,18 @@ async function applyStockMovement(m: StockMovement) {
   if (error) throw error;
 }
 
+// Big uploads go up in pieces so one slow request can't time out the whole backlog. Every piece is an
+// upsert by id (or a delete by id), so a retry after a timeout part-way through is safe.
+const WRITE_CHUNK_SIZE = 200;
+
 async function runDbWrite(write: DbWrite): Promise<void> {
   const table = supabase.from(write.table);
   let result: { error: { message?: string } | null };
   if (write.kind === 'upsert') {
+    if (Array.isArray(write.rows) && write.rows.length > WRITE_CHUNK_SIZE) {
+      for (const rows of chunk(write.rows, WRITE_CHUNK_SIZE)) await runDbWrite({ ...write, rows });
+      return;
+    }
     result = await table.upsert(write.rows, { onConflict: 'id' });
     if (isMissingCostColumnError(result.error) && Array.isArray(write.rows)) {
       result = await supabase.from(write.table).upsert(withoutCostColumn(write.rows), { onConflict: 'id' });
@@ -520,6 +585,10 @@ async function runDbWrite(write: DbWrite): Promise<void> {
     if (Object.keys(values).length === 0) return;
     result = await table.update(values).eq(write.eq[0], write.eq[1]);
   } else if (write.in) {
+    if (write.in[1].length > WRITE_CHUNK_SIZE) {
+      for (const ids of chunk(write.in[1], WRITE_CHUNK_SIZE)) await runDbWrite({ ...write, in: [write.in[0], ids] });
+      return;
+    }
     result = await table.delete().in(write.in[0], write.in[1]);
   } else if (write.eq) {
     result = await table.delete().eq(write.eq[0], write.eq[1]);
@@ -535,15 +604,49 @@ function errorText(error: unknown): string {
   return 'Unknown sync error';
 }
 
-/** Connection problems (and expired logins) are retried for ever; anything else is a database rejection. */
-function isTransientSyncError(message: string): boolean {
-  if (typeof navigator !== 'undefined' && !navigator.onLine) return true;
-  return /failed to fetch|fetch failed|networkerror|network request failed|load failed|timed out|timeout|abort|err_|enotfound|econn|jwt|401|503|502|504/i.test(
-    message
-  );
+/** A short, secret-free description of what an upload carried (ids and counts, never the rows). */
+function summarizePayload(op: { type: string; payload: any }): Record<string, unknown> {
+  const p = op.payload;
+  try {
+    if (op.type === 'db_writes' && Array.isArray(p?.writes)) {
+      return {
+        writes: p.writes.map((w: DbWrite) => ({
+          table: w.table,
+          kind: w.kind,
+          rows: w.kind === 'upsert' ? (Array.isArray(w.rows) ? w.rows.length : 1) : undefined,
+        })),
+      };
+    }
+    if (op.type === 'order_with_items') return { orderId: p?.order?.id, items: p?.orderItems?.length };
+    if (p && typeof p === 'object') {
+      const id = (p.id ?? p.customerId ?? p.supplierId ?? p.productId ?? p.customer?.id ?? p.product?.id ?? p.supplier?.id) as unknown;
+      return { id: typeof id === 'string' ? id : undefined, keys: Object.keys(p).slice(0, 12) };
+    }
+  } catch {
+    // fall through
+  }
+  return {};
+}
+
+/** Asks Supabase for a fresh login token once. True when this PC is still signed in. */
+async function refreshSessionOnce(): Promise<boolean> {
+  try {
+    const { data, error } = await supabase.auth.refreshSession();
+    if (error || !data.session) {
+      logger.warn('auth', 'Session refresh failed', serializeError(error));
+      return false;
+    }
+    logger.info('auth', 'Session refreshed after a rejected upload');
+    return true;
+  } catch (err) {
+    logger.warn('auth', 'Session refresh threw', serializeError(err));
+    return false;
+  }
 }
 
 const MAX_DATABASE_ERROR_RETRIES = 5;
+// One run of the upload queue that takes longer than this is treated as stuck and released.
+const SYNC_RUN_WATCHDOG_MS = 2 * 60 * 1000;
 // How often the background check runs. With live updates working, a full reload from the cloud
 // only happens every FULL_REFRESH_WHEN_LIVE_MS as a safety net.
 const BACKGROUND_REFRESH_MS = 60000;
@@ -588,7 +691,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [supplierPurchases, setSupplierPurchases] = useState<SupplierPurchase[]>([]);
   const [supplierPaymentSchedules, setSupplierPaymentSchedules] = useState<SupplierPaymentSchedule[]>([]);
   const [orderEditLogs, setOrderEditLogs] = useState<OrderEditLog[]>([]);
-  const [pendingSyncOps, setPendingSyncOps] = useState<PendingSyncOperation[]>(() => loadPendingSyncQueue());
+  // Starts from the old localStorage queue (if an older version left one); the IndexedDB copy is
+  // merged in as soon as it has been read (see the queue loading effect below).
+  const [pendingSyncOps, setPendingSyncOps] = useState<PendingSyncOperation[]>(() =>
+    orderQueue(readLegacyQueue<PendingSyncOperation>())
+  );
   const [loading, setLoading] = useState(true);
   // Local (IndexedDB) copies are only written once the initial load has finished,
   // otherwise the empty startup state would wipe them before they are read.
@@ -607,7 +714,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const next = fn(pendingSyncOpsRef.current);
     pendingSyncOpsRef.current = next;
     setPendingSyncOps(next);
+    setQueueLength(next.length);
+    // Saved straight away (not from an effect), so a sale is on disk as early as possible.
+    void persistQueue(next);
   }, []);
+  // Uploads wait until the saved queue has been read, so nothing runs against a half-loaded queue.
+  const queueLoadedRef = useRef(false);
+  const nextSeqRef = useRef(1);
   const processingRef = useRef<Promise<SyncResult> | null>(null);
   const processQueueRef = useRef<() => Promise<SyncResult>>(async () => ({ synced: 0, failed: 0 }));
   const [isSyncing, setIsSyncing] = useState(false);
@@ -616,6 +729,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [needsDbUpdate, setNeedsDbUpdate] = useState(false);
   const [isLive, setIsLive] = useState(false);
   const isLiveRef = useRef(false);
+  const [authPaused, setAuthPaused] = useState(false);
+  const authPausedRef = useRef(false);
+  const [blocked, setBlocked] = useState<BlockedSyncInfo | null>(null);
+  const blockedSinceRef = useRef<{ opId: string; since: string } | null>(null);
   const serverReadyRef = useRef(false);
   // Live changes from other PCs that arrived while this PC still had uploads waiting.
   const liveBufferRef = useRef<LiveChange[]>([]);
@@ -635,10 +752,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // the internet is down. (Writing directly could let an older queued change land after a newer one.)
   const enqueuePendingSync = useCallback(
     (type: PendingSyncOperationType, payload: any) => {
-      updateQueue((ops) => [
-        ...ops,
-        { id: generateId(), type, payload, createdAt: new Date().toISOString(), retryCount: 0 },
-      ]);
+      const id = generateId();
+      const seq = nextSeqRef.current++;
+      updateQueue((ops) => [...ops, { id, type, payload, createdAt: new Date().toISOString(), retryCount: 0, seq }]);
+      logger.debug('sync', 'Change queued', { opId: id, type, queueLength: pendingSyncOpsRef.current.length });
       scheduleSync(0);
     },
     [updateQueue, scheduleSync]
@@ -1108,21 +1225,43 @@ export function StoreProvider({ children }: { children: ReactNode }) {
    * Uploads wait until the database has the multi-PC update: stock and balances are applied by
    * the database itself. Until then changes stay safely queued on this device.
    */
-  const checkServerReady = useCallback(async (): Promise<'ready' | 'needs-update' | 'unreachable'> => {
+  const checkServerReady = useCallback(async (): Promise<'ready' | 'needs-update' | 'unreachable' | 'auth'> => {
     if (serverReadyRef.current) return 'ready';
-    const { data, error } = await supabase.rpc('pos_schema_version');
+    let { data, error } = await supabase.rpc('pos_schema_version');
+    if (error && classifySyncError(error).kind === 'auth' && (await refreshSessionOnce())) {
+      ({ data, error } = await supabase.rpc('pos_schema_version'));
+    }
     if (error) {
-      if (isTransientSyncError(errorText(error))) return 'unreachable';
+      const c = classifySyncError(error);
+      logger.warn('sync', 'Server readiness check failed', { kind: c.kind, error: c.detail });
+      if (c.kind === 'auth') return 'auth';
+      if (isConnectionProblem(c.kind)) return 'unreachable';
       setNeedsDbUpdate(true);
       return 'needs-update';
     }
     if (Number(data) < REQUIRED_SCHEMA_VERSION) {
+      logger.error('sync', 'Database setup is out of date', { found: Number(data), required: REQUIRED_SCHEMA_VERSION });
       setNeedsDbUpdate(true);
       return 'needs-update';
     }
+    logger.info('sync', 'Server ready', { schemaVersion: Number(data) });
     serverReadyRef.current = true;
     setNeedsDbUpdate(false);
     return 'ready';
+  }, []);
+
+  const pauseForAuth = useCallback((count: number) => {
+    if (authPausedRef.current) return;
+    authPausedRef.current = true;
+    setAuthPaused(true);
+    logger.error('sync', 'Uploads paused: login no longer valid', { waitingChanges: count });
+  }, []);
+
+  const resumeAfterAuth = useCallback(() => {
+    if (!authPausedRef.current) return;
+    authPausedRef.current = false;
+    setAuthPaused(false);
+    logger.info('sync', 'Uploads resumed after sign-in');
   }, []);
 
   const processPendingSyncQueue = useCallback((): Promise<SyncResult> => {
@@ -1136,41 +1275,108 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     if (typeof navigator !== 'undefined' && !navigator.onLine) {
       return Promise.resolve({ synced: 0, failed: pendingSyncOpsRef.current.length, reason: 'offline' });
     }
+    if (!queueLoadedRef.current) return Promise.resolve({ synced: 0, failed: 0 });
     // Join a run that is already in progress so callers can wait for it instead of skipping.
     if (processingRef.current) return processingRef.current;
 
+    const currentOp: { op: PendingSyncOperation | null; startedAt: number } = { op: null, startedAt: 0 };
+
     const run = async (): Promise<SyncResult> => {
       const snapshot = pendingSyncOpsRef.current.filter((op) => !op.parked);
-      if (snapshot.length === 0) return { synced: 0, failed: 0 };
+      if (snapshot.length === 0) {
+        blockedSinceRef.current = null;
+        setBlocked(null);
+        return { synced: 0, failed: 0 };
+      }
+
+      // Paused after a rejected login: only carry on once a session works again.
+      if (authPausedRef.current) {
+        if (await refreshSessionOnce()) resumeAfterAuth();
+        else return { synced: 0, failed: snapshot.length, reason: 'signed-out' };
+      }
+
       setIsSyncing(true);
+      const runStarted = performance.now();
 
       const server = await checkServerReady();
+      if (server === 'auth') {
+        pauseForAuth(snapshot.length);
+        return { synced: 0, failed: snapshot.length, reason: 'signed-out' };
+      }
       if (server !== 'ready') {
         scheduleSync(server === 'unreachable' ? 15000 : 60000);
         return { synced: 0, failed: snapshot.length };
       }
 
       const succeeded = new Set<string>();
-      const failures = new Map<string, Pick<PendingSyncOperation, 'retryCount' | 'lastError' | 'parked'>>();
-      let blockedBy: PendingSyncOperation | null = null;
+      const failures = new Map<
+        string,
+        Pick<PendingSyncOperation, 'retryCount' | 'lastError' | 'parked' | 'lastErrorKind' | 'lastErrorDetail' | 'lastAttemptAt'>
+      >();
+      let blockedBy: { op: PendingSyncOperation; kind: SyncErrorClass; message: string; nextRetryMs: number | null } | null = null;
 
-      for (const op of snapshot) {
+      const attemptOp = async (op: PendingSyncOperation) => {
         try {
           await executePendingSyncOperation(op);
-          succeeded.add(op.id);
+          return null;
         } catch (error) {
-          const message = errorText(error);
-          const retryCount = op.retryCount + 1;
-          const parked = !isTransientSyncError(message) && retryCount >= MAX_DATABASE_ERROR_RETRIES;
-          failures.set(op.id, { retryCount, lastError: message, parked });
-          if (!parked) {
-            // Keep changes in order: stop so nothing newer overtakes this one (e.g. an older
-            // stock figure landing after a newer one).
-            blockedBy = { ...op, retryCount };
-            break;
-          }
+          return classifySyncError(error);
         }
+      };
+
+      for (const op of snapshot) {
+        const opStarted = performance.now();
+        currentOp.op = op;
+        currentOp.startedAt = Date.now();
+        let failure = await attemptOp(op);
+        // An expired token is renewed once; if that works the same change is simply tried again.
+        if (failure?.kind === 'auth' && (await refreshSessionOnce())) failure = await attemptOp(op);
+        const ms = Math.round(performance.now() - opStarted);
+
+        if (!failure) {
+          succeeded.add(op.id);
+          logger.info('sync', 'Change uploaded', { opId: op.id, type: op.type, attempt: op.retryCount + 1, ms, ...summarizePayload(op) });
+          continue;
+        }
+
+        const now = new Date().toISOString();
+        const base = { lastErrorKind: failure.kind, lastErrorDetail: failure.detail, lastAttemptAt: now };
+
+        if (failure.kind === 'auth') {
+          // Retrying with a dead login never works: stop and ask the user to sign in again.
+          failures.set(op.id, { ...base, retryCount: op.retryCount, lastError: friendlySyncMessage(failure), parked: false });
+          logger.error('sync', 'Upload rejected: login no longer valid', { opId: op.id, type: op.type, ms, error: failure.detail });
+          pauseForAuth(snapshot.length - succeeded.size);
+          blockedBy = { op, kind: 'auth', message: friendlySyncMessage(failure), nextRetryMs: null };
+          break;
+        }
+
+        const retryCount = op.retryCount + 1;
+        const connection = isConnectionProblem(failure.kind);
+        const parked = !connection && (isPermanentProblem(failure.kind) || retryCount >= MAX_DATABASE_ERROR_RETRIES);
+        const message = friendlySyncMessage(failure);
+        failures.set(op.id, { ...base, retryCount, lastError: message, parked });
+
+        const logData = {
+          opId: op.id,
+          type: op.type,
+          attempt: retryCount,
+          kind: failure.kind,
+          ms,
+          error: failure.detail,
+          ...summarizePayload(op),
+        };
+        if (parked) {
+          logger.error('sync', 'Change set aside (the database will not accept it)', logData);
+          continue;
+        }
+        logger.warn('sync', 'Upload failed, will retry', logData);
+        // Keep changes in order: stop so nothing newer overtakes this one (e.g. an older stock
+        // figure landing after a newer one).
+        blockedBy = { op: { ...op, retryCount }, kind: failure.kind, message, nextRetryMs: backoffDelayMs(retryCount) };
+        break;
       }
+      currentOp.op = null;
 
       updateQueue((ops) =>
         ops
@@ -1190,10 +1396,47 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       }
 
       const remaining = pendingSyncOpsRef.current.filter((op) => !op.parked).length;
-      if (remaining > 0) {
-        // Retry with a growing delay when blocked; carry straight on with changes queued meanwhile.
-        scheduleSync(blockedBy ? Math.min(60000, 5000 * blockedBy.retryCount) : 0);
+      if (blockedBy) {
+        const since =
+          blockedSinceRef.current?.opId === blockedBy.op.id
+            ? blockedSinceRef.current.since
+            : new Date().toISOString();
+        blockedSinceRef.current = { opId: blockedBy.op.id, since };
+        const nextRetryMs = blockedBy.nextRetryMs;
+        setBlocked({
+          opId: blockedBy.op.id,
+          type: blockedBy.op.type,
+          label: describeSyncOp(blockedBy.op.type, blockedBy.op.payload),
+          error: blockedBy.message,
+          kind: blockedBy.kind,
+          attempts: blockedBy.op.retryCount,
+          since,
+          nextRetryAt: nextRetryMs === null ? null : new Date(Date.now() + nextRetryMs).toISOString(),
+        });
+        logger.warn('sync', 'Upload queue blocked', {
+          opId: blockedBy.op.id,
+          type: blockedBy.op.type,
+          kind: blockedBy.kind,
+          blockedForMs: Date.now() - Date.parse(since),
+          nextRetryInMs: nextRetryMs,
+          waiting: remaining,
+        });
+        // Retry with a growing delay (and a little jitter) when blocked.
+        if (nextRetryMs !== null) scheduleSync(nextRetryMs);
       } else {
+        blockedSinceRef.current = null;
+        setBlocked(null);
+        // Carry straight on with changes queued meanwhile.
+        if (remaining > 0) scheduleSync(0);
+      }
+      if (succeeded.size > 0 || blockedBy) {
+        logger.info('sync', 'Upload run finished', {
+          uploaded: succeeded.size,
+          waiting: remaining,
+          ms: Math.round(performance.now() - runStarted),
+        });
+      }
+      if (remaining === 0) {
         // Everything is uploaded: now apply what other PCs changed meanwhile.
         flushLiveBufferRef.current();
       }
@@ -1201,13 +1444,34 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       return { synced: succeeded.size, failed: remaining };
     };
 
-    const promise = run().finally(() => {
-      processingRef.current = null;
-      setIsSyncing(false);
+    // If one run never settles (a hung request), release the lock so the next interval can retry.
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    const stuck = new Promise<SyncResult>((resolve) => {
+      watchdog = setTimeout(() => {
+        logger.error('sync', 'Sync run stuck, releasing it', {
+          afterMs: SYNC_RUN_WATCHDOG_MS,
+          opId: currentOp.op?.id,
+          type: currentOp.op?.type,
+          opRunningForMs: currentOp.op ? Date.now() - currentOp.startedAt : undefined,
+        });
+        resolve({ synced: 0, failed: pendingSyncOpsRef.current.filter((op) => !op.parked).length });
+      }, SYNC_RUN_WATCHDOG_MS);
     });
+
+    const promise = Promise.race([run(), stuck])
+      .catch((error) => {
+        logger.error('sync', 'Sync run crashed', serializeError(error));
+        scheduleSync(15000);
+        return { synced: 0, failed: pendingSyncOpsRef.current.filter((op) => !op.parked).length } as SyncResult;
+      })
+      .finally(() => {
+        if (watchdog) clearTimeout(watchdog);
+        processingRef.current = null;
+        setIsSyncing(false);
+      });
     processingRef.current = promise;
     return promise;
-  }, [executePendingSyncOperation, user, updateQueue, scheduleSync, checkServerReady]);
+  }, [executePendingSyncOperation, user, updateQueue, scheduleSync, checkServerReady, pauseForAuth, resumeAfterAuth]);
   processQueueRef.current = processPendingSyncQueue;
 
   // Latest data, so the background refresh can tell whether anything changed on this device meanwhile.
@@ -1290,18 +1554,35 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     if (typeof navigator !== 'undefined' && !navigator.onLine) return false;
     const startedAt = Date.now();
     const before = dataRef.current;
-    if (!isSafeToApplyCloudCopy(startedAt - 1, before)) return false;
+    if (!isSafeToApplyCloudCopy(startedAt - 1, before)) {
+      logger.debug('cloud', 'Cloud refresh skipped (uploads waiting or running)');
+      return false;
+    }
     cloudLoadInProgressRef.current = true;
     try {
       const snapshot = await fetchCloudSnapshot();
-      if (!signedInRef.current || !isSafeToApplyCloudCopy(startedAt, before)) return false;
+      if (!signedInRef.current || !isSafeToApplyCloudCopy(startedAt, before)) {
+        logger.info('cloud', 'Cloud refresh skipped (local changes in progress)', { ms: Date.now() - startedAt });
+        return false;
+      }
       applyCloudSnapshot(snapshot);
+      recordCloudRefresh(Date.now() - startedAt);
+      logger.info('cloud', 'Cloud refresh applied', {
+        ms: Date.now() - startedAt,
+        rows: {
+          products: snapshot.products.length,
+          orders: snapshot.orders.length,
+          orderItems: snapshot.orderItems.length,
+          customers: snapshot.customers.length,
+          customerTransactions: snapshot.customerTransactions.length,
+        },
+      });
       liveBufferRef.current = [];
       lastFullRefreshRef.current = Date.now();
       setLastSyncedAt(new Date().toISOString());
       return true;
     } catch (error) {
-      console.warn('Background refresh failed:', errorText(error));
+      logger.warn('cloud', 'Background refresh failed', { ms: Date.now() - startedAt, error: serializeError(error) });
       return false;
     } finally {
       cloudLoadInProgressRef.current = false;
@@ -1408,7 +1689,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         
         // Check if Supabase is configured
         if (!import.meta.env.VITE_SUPABASE_URL) {
-          console.warn('Supabase not configured, using local storage fallback');
+          logger.warn('app', 'Supabase not configured, using local storage fallback');
           await loadFromDexie(true);
           setLoading(false);
           return;
@@ -1464,17 +1745,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         setHeldCarts(await loadArrayFromDexie('heldCarts'));
         setIsHydrated(true);
       } catch (error) {
-        const rawMessage =
-          error instanceof Error
-            ? error.message
-            : typeof error === 'string'
-              ? error
-              : JSON.stringify(error);
-        if (isTransientSyncError(rawMessage)) {
-          console.warn('Supabase unreachable, using local storage fallback.');
+        const classified = classifySyncError(error);
+        if (isConnectionProblem(classified.kind) || classified.kind === 'auth') {
+          logger.warn('cloud', 'Cloud database unreachable at startup, using the copy on this device', {
+            kind: classified.kind,
+            error: classified.detail,
+          });
           toast.warning('Cloud database unreachable. Working from data saved on this device.');
         } else {
-          console.error('Error fetching data from Supabase:', error);
+          logger.error('cloud', 'Failed to load data from the cloud', { kind: classified.kind, error: classified.detail });
           toast.error('Failed to load data from database');
         }
         // Already showing local data: keep it (it may hold changes newer than the saved copy).
@@ -1517,27 +1796,68 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     fetchData();
   }, [user?.id, refreshKey]);
 
-  const queueSaveFailedRef = useRef(false);
+  // Sends warnings and errors (metadata only) to the central log table while signed in. Optional:
+  // it stops by itself if the table does not exist.
   useEffect(() => {
-    try {
-      localStorage.setItem(PENDING_SYNC_STORAGE_KEY, JSON.stringify(pendingSyncOps));
-      queueSaveFailedRef.current = false;
-    } catch {
-      // Storage full (only after a very long time offline): keep working, but say so once.
-      if (!queueSaveFailedRef.current) {
-        queueSaveFailedRef.current = true;
-        toast.error('Too many changes waiting to upload. Connect to the internet soon so nothing is lost if the app is closed.');
-      }
+    if (!import.meta.env.VITE_SUPABASE_URL || !user) return;
+    return startRemoteLogging(user.email, typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev');
+  }, [user?.id, user?.email]);
+
+  // A fresh sign-in (or another user) lifts the pause that a rejected login put on uploads.
+  useEffect(() => {
+    if (user) {
+      resumeAfterAuth();
+      if (pendingSyncOpsRef.current.some((op) => !op.parked)) scheduleSync(0);
     }
-  }, [pendingSyncOps]);
+  }, [user?.id, resumeAfterAuth, scheduleSync]);
+
+  // Reads the saved queue from IndexedDB once, merges it with anything already in memory (the old
+  // localStorage queue, or changes made in the first moments), and only then lets uploads start.
+  useEffect(() => {
+    let cancelled = false;
+    let warned = false;
+    onQueueSaveFailure(() => {
+      if (warned) return;
+      warned = true;
+      toast.error('Could not save the waiting changes on this PC. Connect to the internet soon so nothing is lost if the app is closed.');
+    });
+    (async () => {
+      try {
+        const stored = await loadPersistedQueue<PendingSyncOperation>();
+        if (cancelled) return;
+        const byId = new Map(stored.map((op) => [op.id, op]));
+        // In-memory entries win (they are newer), then the order is rebuilt.
+        for (const op of pendingSyncOpsRef.current) byId.set(op.id, op);
+        const merged = orderQueue([...byId.values()]).map((op, index) => ({ ...op, seq: op.seq ?? index + 1 }));
+        nextSeqRef.current = merged.reduce((max, op) => Math.max(max, op.seq ?? 0), 0) + 1;
+        queueLoadedRef.current = true;
+        logger.info('db', 'Upload queue loaded', { stored: stored.length, merged: merged.length });
+        updateQueue(() => merged);
+        void finishLegacyMigration(merged.map((op) => op.id));
+      } catch (error) {
+        // IndexedDB unavailable: carry on from the in-memory queue (which started from localStorage).
+        logger.error('db', 'Could not read the upload queue from IndexedDB', serializeError(error));
+        queueLoadedRef.current = true;
+      }
+      if (!cancelled && pendingSyncOpsRef.current.some((op) => !op.parked)) scheduleSync(0);
+    })();
+    return () => {
+      cancelled = true;
+      onQueueSaveFailure(null);
+    };
+  }, [updateQueue, scheduleSync]);
 
   useEffect(() => {
     const handleOnline = () => {
+      logger.info('sync', 'Network: online');
       setIsOnline(true);
       // Upload what was saved while offline, then bring in what other devices changed.
       void processPendingSyncQueue().then(() => refreshFromCloudRef.current());
     };
-    const handleOffline = () => setIsOnline(false);
+    const handleOffline = () => {
+      logger.warn('sync', 'Network: offline');
+      setIsOnline(false);
+    };
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
     return () => {
@@ -1590,6 +1910,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
     channel.subscribe((status) => {
       const live = status === 'SUBSCRIBED';
+      if (live) logger.info('cloud', 'Live updates connected');
+      else logger.warn('cloud', `Live updates: ${status}`);
       isLiveRef.current = live;
       setIsLive(live);
       // After a dropped connection, changes may have been missed: reload once.
@@ -2130,9 +2452,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   // Products deleted here or on another PC leave the open sale and held bills. Selling one would
   // upload a sale line for a product the database no longer has, and the whole sale would be rejected.
+  // The id set is rebuilt only when the catalogue changes, not on every cart change (i.e. every scan).
+  const productIdSet = useMemo(() => new Set(products.map((p) => p.id)), [products]);
   useEffect(() => {
     if (!isHydrated) return;
-    const exists = new Set(products.map((p) => p.id));
+    const exists = productIdSet;
     const gone = cart.filter((item) => !exists.has(item.product.id));
     if (gone.length > 0) {
       setCart((prev) => prev.filter((item) => exists.has(item.product.id)));
@@ -2145,10 +2469,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           .filter((h) => h.items.length > 0)
       );
     }
-  }, [products, cart, heldCarts, isHydrated]);
+  }, [productIdSet, cart, heldCarts, isHydrated]);
 
   // Order functions
   const createOrder = async (options: CreateOrderOptions): Promise<Order> => {
+    const checkoutStarted = performance.now();
     const {
       items,
       paymentMethod,
@@ -2254,6 +2579,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       void saveArrayToDexie('orderItems', [...orderItems, ...newOrderItems]);
     }
 
+    logger.info('pos', 'Checkout', {
+      orderId: order.id,
+      items: newOrderItems.length,
+      total: order.totalAmount,
+      paymentMethod,
+      ms: Math.round(performance.now() - checkoutStarted),
+    });
     return order;
   };
 
@@ -2756,7 +3088,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   };
 
   // Customer functions (Digi Khata)
-  const addCustomer = (customer: Omit<Customer, 'id' | 'createdAt' | 'totalCredit' | 'totalPaid' | 'balance'>) => {
+  const addCustomer = (
+    customer: Omit<Customer, 'id' | 'createdAt' | 'totalCredit' | 'totalPaid' | 'balance'>,
+    openingBalance?: OpeningBalanceInput
+  ): boolean => {
+    // Checked before anything is created, so a bad opening balance never leaves a half-made customer.
+    if (openingBalance) {
+      const problem = openingBalanceError(openingBalance, []);
+      if (problem) {
+        toast.error(problem);
+        return false;
+      }
+    }
     const newCustomer: Customer = {
       ...customer,
       id: generateId(),
@@ -2771,6 +3114,38 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     if (import.meta.env.VITE_SUPABASE_URL) {
       enqueuePendingSync('customer_add', { customer: newCustomer });
     }
+    // Queued after the customer, and the queue runs in order, so the customer exists first.
+    if (openingBalance) addCustomerOpeningBalance(newCustomer.id, openingBalance);
+    return true;
+  };
+
+  const addCustomerOpeningBalance = (customerId: string, input: OpeningBalanceInput): boolean => {
+    if (!customersRef.current.some((c) => c.id === customerId)) {
+      toast.error('Customer not found');
+      return false;
+    }
+    const existing = customerTransactionsRef.current.filter((t) => t.customerId === customerId);
+    const problem = openingBalanceError(input, existing);
+    if (problem) {
+      toast.error(problem);
+      return false;
+    }
+    const transaction = buildOpeningBalanceEntry({ ...input, id: generateId(), customerId });
+    customerTransactionsRef.current = [...customerTransactionsRef.current, transaction];
+    setCustomerTransactions((prev) => [...prev, transaction]);
+    setCustomers((prev) => prev.map((c) => (c.id === customerId ? applyCustomerLedger(c, { added: [transaction] }) : c)));
+    logger.info('pos', 'Opening balance recorded', {
+      customerId,
+      direction: input.direction,
+      amount: transaction.amount,
+      asOfDate: input.asOfDate,
+    });
+
+    if (import.meta.env.VITE_SUPABASE_URL) {
+      // The customer's totals follow from the entry in the database.
+      enqueuePendingSync(transaction.type === 'credit' ? 'customer_credit' : 'customer_payment', { transaction });
+    }
+    return true;
   };
 
   const updateCustomer = (id: string, updates: Partial<Customer>) => {
@@ -2818,6 +3193,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // payment typed in by hand must never be worded like one.
   const REVERSAL_WORDING_ERROR = 'A payment description can\'t start with "Credit reversal": that wording is kept for cancelled bills.';
 
+  // "Opening balance ..." marks the entry carried over from the old ledger book, so a payment can't use it either.
+  const OPENING_WORDING_ERROR =
+    'A payment description cannot start with "Opening balance": that wording is kept for the balance carried over from the old ledger book.';
+
   const addCustomerPayment = (customerId: string, amount: number, description: string, paymentMethod: 'cash' | 'card'): boolean => {
     if (!customersRef.current.some((c) => c.id === customerId)) {
       toast.error('Customer not found');
@@ -2830,6 +3209,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const text = description.trim() || `${paymentMethod === 'card' ? 'Card' : 'Cash'} payment received`;
     if (isCreditReversal({ type: 'payment', description: text })) {
       toast.error(REVERSAL_WORDING_ERROR);
+      return false;
+    }
+    if (isOpeningBalance({ description: text })) {
+      toast.error(OPENING_WORDING_ERROR);
       return false;
     }
     const value = Number(amount.toFixed(2));
@@ -2892,6 +3275,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         isCreditReversal(old)
           ? 'Keep "Credit reversal" at the start of this description: it is what takes the bill off the balance.'
           : REVERSAL_WORDING_ERROR
+      );
+      return false;
+    }
+
+    if (isOpeningBalance(old) !== isOpeningBalance(next)) {
+      toast.error(
+        isOpeningBalance(old)
+          ? 'Keep "Opening balance" at the start of this description: it marks the balance from the old ledger book.'
+          : OPENING_WORDING_ERROR
       );
       return false;
     }
@@ -3078,6 +3470,37 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // Supplier ledger amounts are signed: purchases are positive, payments to the supplier negative.
   const isValidSupplierAmount = (amount: number) => isValidAmount(Math.abs(amount));
 
+  const SUPPLIER_OPENING_WORDING_ERROR =
+    'A description cannot start with "Opening balance": that wording is kept for the balance carried over from the old ledger book.';
+
+  const addSupplierOpeningBalance = (supplierId: string, input: OpeningBalanceInput): boolean => {
+    if (!suppliersRef.current.some((s) => s.id === supplierId)) {
+      toast.error('Supplier not found');
+      return false;
+    }
+    const existing = supplierPurchasesRef.current.filter((p) => p.supplierId === supplierId);
+    const problem = openingBalanceError(input, existing);
+    if (problem) {
+      toast.error(problem.replace('Edit it in the ledger instead.', 'Edit it in the ledger entries instead.'));
+      return false;
+    }
+    const entry = buildSupplierOpeningEntry({ ...input, id: generateId(), supplierId });
+    supplierPurchasesRef.current = [entry, ...supplierPurchasesRef.current];
+    setSupplierPurchases((prev) => [entry, ...prev]);
+    setSuppliers((prev) => prev.map((s) => (s.id === supplierId ? applySupplierLedger(s, { added: [entry] }) : s)));
+    logger.info('pos', 'Supplier opening balance recorded', {
+      supplierId,
+      direction: input.direction,
+      amount: Math.abs(entry.amount),
+      asOfDate: input.asOfDate,
+    });
+
+    if (import.meta.env.VITE_SUPABASE_URL) {
+      enqueuePendingSync('supplier_purchase_add', { purchase: entry });
+    }
+    return true;
+  };
+
   const addSupplierPurchase = (purchase: Omit<SupplierPurchase, 'id' | 'createdAt'>): boolean => {
     if (!suppliersRef.current.some((s) => s.id === purchase.supplierId)) {
       toast.error('Supplier not found');
@@ -3089,6 +3512,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
     if (!isValidLocalDate(purchase.purchaseDate)) {
       toast.error('Enter a valid date');
+      return false;
+    }
+    if (isOpeningBalance({ description: purchase.description.trim() })) {
+      toast.error(SUPPLIER_OPENING_WORDING_ERROR);
       return false;
     }
     const amount = Number(purchase.amount.toFixed(2));
@@ -3133,6 +3560,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
 
     const { next, dbUpdates } = editedSupplierPurchase(old, updates);
+    if (isOpeningBalance(old) !== isOpeningBalance(next)) {
+      toast.error(
+        isOpeningBalance(old)
+          ? 'Keep "Opening balance" at the start of this description: it marks the balance from the old ledger book.'
+          : SUPPLIER_OPENING_WORDING_ERROR
+      );
+      return false;
+    }
     supplierPurchasesRef.current = supplierPurchasesRef.current.map((p) => (p.id === id ? next : p));
     setSupplierPurchases((prev) => prev.map((p) => (p.id === id ? next : p)));
     setSuppliers((prev) =>
@@ -3515,6 +3950,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     // Pressing Sync now also retries changes that were set aside after database errors.
     updateQueue((ops) => ops.map((op) => (op.parked ? { ...op, parked: false, retryCount: 0 } : op)));
     const pending = pendingSyncOpsRef.current.length;
+    logger.info('sync', 'Sync now pressed', { waiting: pending });
     if (typeof navigator !== 'undefined' && !navigator.onLine) {
       toast.error(
         pending > 0
@@ -3543,6 +3979,44 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     if (result.synced === 0) toast.success('Everything is up to date.');
   }, [processPendingSyncQueue, user, updateQueue]);
 
+  const syncQueue = useMemo<SyncQueueItem[]>(
+    () =>
+      pendingSyncOps.map((op) => ({
+        id: op.id,
+        type: op.type,
+        label: describeSyncOp(op.type, op.payload),
+        createdAt: op.createdAt,
+        retryCount: op.retryCount,
+        parked: !!op.parked,
+        lastError: op.lastError,
+        lastErrorKind: op.lastErrorKind,
+        lastErrorDetail: op.lastErrorDetail,
+        lastAttemptAt: op.lastAttemptAt,
+        payload: op.payload,
+      })),
+    [pendingSyncOps]
+  );
+
+  const discardSyncOp = useCallback(
+    (id: string) => {
+      const op = pendingSyncOpsRef.current.find((o) => o.id === id);
+      if (!op) return;
+      // Logged with its contents first (long lists are shortened by the logger), so there is a trace of what was dropped.
+      logger.error('sync', 'Change discarded by an admin', {
+        opId: op.id,
+        type: op.type,
+        createdAt: op.createdAt,
+        retryCount: op.retryCount,
+        lastError: op.lastError,
+        lastErrorDetail: op.lastErrorDetail,
+        payload: op.payload,
+      });
+      logger.flush();
+      updateQueue((ops) => ops.filter((o) => o.id !== id));
+    },
+    [updateQueue]
+  );
+
   const syncStatus: SyncStatus = {
     online: isOnline,
     syncing: isSyncing,
@@ -3552,6 +4026,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     lastSyncedAt,
     needsDbUpdate,
     live: isLive,
+    authPaused,
+    blocked,
   };
 
   return (
@@ -3576,6 +4052,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         customerTransactions,
         customerReminders,
         addCustomer,
+        addCustomerOpeningBalance,
         updateCustomer,
         deleteCustomer,
         getCustomerById,
@@ -3597,6 +4074,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         deleteSupplier,
         getSupplierById,
         addSupplierPurchase,
+        addSupplierOpeningBalance,
         updateSupplierPurchase,
         deleteSupplierPurchase,
         receiveSupplierStock,
@@ -3640,6 +4118,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         calculateGlobalDiscountAmount,
         manualSync,
         syncStatus,
+        syncQueue,
+        discardSyncOp,
       }}
     >
       {children}

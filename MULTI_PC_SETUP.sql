@@ -226,6 +226,47 @@ end;
 $$;
 
 -- ---------------------------------------------------------------------------
+-- 5b. Central error log (optional)
+-- ---------------------------------------------------------------------------
+-- Each PC sends its warnings and errors here (error metadata only, never sale data, passwords or
+-- tokens; at most 50 per hour per PC). Staff accounts can only add rows. Admins can read them in
+-- the Supabase dashboard (Table editor > app_logs) to see sync problems without visiting the shop.
+-- The app works without this table: it simply stops trying to send. It does not change the schema
+-- version, so older installs keep working.
+-- Housekeeping, run now and then:  delete from public.app_logs where created_at < now() - interval '60 days';
+create table if not exists public.app_logs (
+  id uuid primary key default gen_random_uuid(),
+  created_at timestamptz not null default now(),
+  logged_at timestamptz not null default now(),
+  pc text check (char_length(pc) <= 120),
+  app_version text check (char_length(app_version) <= 40),
+  user_email text check (char_length(user_email) <= 200),
+  level text not null check (level in ('warn', 'error')),
+  category text not null check (char_length(category) <= 30),
+  message text not null check (char_length(message) <= 600),
+  data jsonb
+);
+create index if not exists app_logs_created_at_idx on public.app_logs (created_at desc);
+
+alter table public.app_logs enable row level security;
+drop policy if exists "Authenticated can add app_logs" on public.app_logs;
+drop policy if exists "Admins can read app_logs" on public.app_logs;
+create policy "Authenticated can add app_logs" on public.app_logs
+  for insert to authenticated
+  with check ((select auth.uid()) is not null);
+-- The admin check comes from SUPABASE_SETUP.sql; if that helper is missing, this one policy is skipped
+-- (the rest of this script still runs) and the log can be read from the Supabase dashboard anyway.
+do $$
+begin
+  if to_regprocedure('private.is_admin()') is not null then
+    execute 'create policy "Admins can read app_logs" on public.app_logs
+      for select to authenticated
+      using ((select private.is_admin()))';
+  end if;
+end;
+$$;
+
+-- ---------------------------------------------------------------------------
 -- 6. Tells the app which features this database is ready for
 -- ---------------------------------------------------------------------------
 -- 2 = several PCs (sections 1-4), 3 = returns/exchanges and bill history (section 5).

@@ -1,5 +1,6 @@
 import { useStore } from '@/contexts/useStore';
 import { useAuth } from '@/contexts/useAuth';
+import { DiagnosticsPanel } from '@/components/settings/DiagnosticsPanel';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -39,7 +40,7 @@ import { Upload, X, Store, User, Lock, Building2, FileImage, Users, Plus, Trash2
 
 export default function Settings() {
   const { settings, updateSettings } = useStore();
-  const { user, updateCredentials, getUsers, createUser, deleteUser, setUserRole, setUserPassword, canChangeEmail, isAdmin } =
+  const { user, updateCredentials, getUsers, createUser, deleteUser, setUserRole, setUserPassword, canChangeEmail, isAdmin, logoutEverywhere } =
     useAuth();
   const [form, setForm] = useState(settings);
   const [logoPreview, setLogoPreview] = useState<string | undefined>(settings.logo);
@@ -616,6 +617,37 @@ export default function Settings() {
                 </div>
               </CardContent>
             </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Sign out everywhere</CardTitle>
+                <CardDescription>
+                  Logout in the sidebar only ends this PC's session. Use this if a PC is lost or a password leaked.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button variant="destructive">Sign out on all PCs</Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Sign out on all PCs?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        This signs your account ({user?.email}) out on <strong>every</strong> PC, including this one.
+                        Other PCs are signed out within about an hour. Changes waiting to upload stay on each PC.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancel</AlertDialogCancel>
+                      <AlertDialogAction onClick={() => void logoutEverywhere()}>Sign out everywhere</AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </CardContent>
+            </Card>
+
+            <DiagnosticsPanel />
 
             <Dialog open={!!passwordTarget} onOpenChange={(open) => !open && setPasswordTarget(null)}>
               <DialogContent>

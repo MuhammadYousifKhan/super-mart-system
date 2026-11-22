@@ -231,7 +231,19 @@ function SyncStatusButton({
       ? `Updated ${formatDistanceToNow(new Date(status.lastSyncedAt), { addSuffix: true })}`
       : 'Syncs automatically';
 
-  if (status.needsDbUpdate) {
+  const waitingOn = status.blocked
+    ? `Waiting on ${status.blocked.label}: ${status.blocked.error}${
+        status.blocked.nextRetryAt
+          ? ` (retry ${formatDistanceToNow(new Date(status.blocked.nextRetryAt), { addSuffix: true })})`
+          : ''
+      }`
+    : null;
+
+  if (status.authPaused) {
+    icon = <AlertTriangle className="w-4 h-4 text-destructive" />;
+    title = 'Sign in again to upload';
+    detail = `${n(status.pending + status.failed)} saved on this PC, waiting`;
+  } else if (status.needsDbUpdate) {
     icon = <AlertTriangle className="w-4 h-4 text-warning" />;
     title = 'Database update needed';
     detail = status.pending > 0 ? `${n(status.pending)} saved here, waiting` : 'Run MULTI_PC_SETUP.sql';
@@ -250,7 +262,7 @@ function SyncStatusButton({
   } else if (status.pending > 0) {
     icon = <CloudUpload className="w-4 h-4 text-warning" />;
     title = `${n(status.pending)} waiting to upload`;
-    detail = 'Retrying automatically';
+    detail = waitingOn ?? 'Retrying automatically';
   }
 
   return (
@@ -264,7 +276,7 @@ Click to sync now` : 'Click to sync now'}
       <span className="mr-3 shrink-0">{icon}</span>
       <span className="min-w-0 flex flex-col">
         <span className="text-sm truncate">{title}</span>
-        <span className="text-xs text-sidebar-foreground/50 truncate font-normal">{detail}</span>
+        <span className="text-xs text-sidebar-foreground/50 font-normal break-words whitespace-normal">{detail}</span>
       </span>
     </Button>
   );
