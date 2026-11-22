@@ -11,7 +11,7 @@ import type {
 import { getOrderBreakdown } from '@/lib/orderMath';
 import { parseLocalDate, toLocalISODate, todayLocal } from '@/lib/dates';
 import { isExchangeOrder } from '@/lib/exchange';
-import { isCreditReversal } from '@/lib/ledger';
+import { isCreditReversal, isOpeningBalance } from '@/lib/ledger';
 
 export { isCreditReversal };
 
@@ -268,11 +268,12 @@ export function buildSalesProfitReport(args: {
     addTo(byCashier, order.cashierId || order.cashierName, order.cashierName || 'Unknown', billId, 0, breakdown.taxable, orderCost);
   }
 
-  // Credit recovered: real customer payments, not reversals of cancelled credit bills.
+  // Credit recovered: real customer payments, not reversals of cancelled credit bills and not the
+  // balance carried over from the old ledger book (an advance there is not cash taken today).
   const recoveredByMethod = new Map<string, PaymentRow>();
   let creditRecovered = 0;
   for (const t of customerTransactions) {
-    if (t.type !== 'payment' || isCreditReversal(t) || !inRange(dayOf(t.createdAt), range)) continue;
+    if (t.type !== 'payment' || isCreditReversal(t) || isOpeningBalance(t) || !inRange(dayOf(t.createdAt), range)) continue;
     creditRecovered += t.amount;
     const key = t.paymentMethod === 'card' ? 'Card' : 'Cash';
     const row = recoveredByMethod.get(key) || { method: key, orders: 0, amount: 0 };
@@ -371,7 +372,9 @@ export function buildCustomerLedger(customerId: string, transactions: CustomerTr
       .filter((t) => t.customerId === customerId)
       .map((t) => {
         const reversal = isCreditReversal(t);
-        const kind = t.type === 'credit' ? 'Credit sale' : reversal ? 'Reversal' : `Payment${t.paymentMethod ? ` (${t.paymentMethod})` : ''}`;
+        const kind = isOpeningBalance(t)
+          ? 'Opening balance'
+          : t.type === 'credit' ? 'Credit sale' : reversal ? 'Reversal' : `Payment${t.paymentMethod ? ` (${t.paymentMethod})` : ''}`;
         return {
           id: t.id,
           date: dayOf(t.createdAt),
@@ -450,9 +453,10 @@ export function buildCustomerOutstanding(
       const day = dayOf(t.createdAt);
       if (t.type === 'credit') {
         open.push({ day, remaining: t.amount });
-        lastCreditDate = day;
+        // An opening balance is the old book's balance, not a credit sale made on that day.
+        if (!isOpeningBalance(t)) lastCreditDate = day;
       } else {
-        if (!isCreditReversal(t)) lastPaymentDate = day;
+        if (!isCreditReversal(t) && !isOpeningBalance(t)) lastPaymentDate = day;
         let left = t.amount;
         while (left > 0 && open.length > 0) {
           const take = Math.min(left, open[0].remaining);
@@ -508,7 +512,7 @@ export function buildCustomerPayments(
 ): CustomerPaymentRow[] {
   const names = new Map(customers.map((c) => [c.id, c.name]));
   return transactions
-    .filter((t) => t.type === 'payment' && !isCreditReversal(t) && inRange(dayOf(t.createdAt), range))
+    .filter((t) => t.type === 'payment' && !isCreditReversal(t) && !isOpeningBalance(t) && inRange(dayOf(t.createdAt), range))
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
     .map((t) => ({
       id: t.id,

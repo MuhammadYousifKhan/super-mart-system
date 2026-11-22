@@ -1,11 +1,91 @@
 import type { Customer, CustomerTransaction, Supplier, SupplierPurchase } from '@/types/pos';
-import { toLocalISODate, withLocalDate } from '@/lib/dates';
+import { isValidLocalDate, parseLocalDate, todayLocal, toLocalISODate, withLocalDate } from '@/lib/dates';
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
 /** A customer ledger entry reversing a credit bill (cancelled, edited or returned) rather than a real payment. */
 export const isCreditReversal = (t: Pick<CustomerTransaction, 'type' | 'description'>) =>
   t.type === 'payment' && /^credit reversal/i.test(t.description || '');
+
+/** Wording of the ledger entry that carries a customer's balance from the old ledger book. */
+export const OPENING_BALANCE_DESCRIPTION = 'Opening balance (from ledger book)';
+
+/**
+ * A customer ledger entry that carries the balance from the old paper ledger. Recognised by its
+ * description (like credit reversals), so it needs no database column. It is a normal ledger
+ * entry, so totals stay right on every PC through the existing database trigger.
+ */
+export const isOpeningBalance = (t: Pick<CustomerTransaction, 'description'>) =>
+  /^opening balance/i.test(t.description || '');
+
+export type OpeningBalanceDirection = 'owes' | 'advance';
+
+export interface OpeningBalanceInput {
+  amount: number;
+  /** 'owes': the customer owes the shop. 'advance': the shop holds the customer's money. */
+  direction: OpeningBalanceDirection;
+  /** The day the balance stood in the old book (YYYY-MM-DD, today or earlier). */
+  asOfDate: string;
+  note?: string;
+}
+
+/** Why an opening balance can't be recorded, or null when it can. */
+export function openingBalanceError(
+  input: OpeningBalanceInput,
+  existing: Array<Pick<CustomerTransaction, 'description'>>,
+  today: string = todayLocal()
+): string | null {
+  if (!isValidAmount(input.amount)) return 'Enter an opening balance above 0 with at most 2 decimals';
+  if (!isValidLocalDate(input.asOfDate)) return 'Enter a valid "as of" date';
+  if (input.asOfDate > today) return "The \"as of\" date can't be in the future";
+  if (existing.some(isOpeningBalance)) {
+    return 'This customer already has an opening balance. Edit it in the ledger instead.';
+  }
+  return null;
+}
+
+/**
+ * The ledger entry for an opening balance. Dated at the start of the chosen day, so it sorts before
+ * everything the app records afterwards. An advance is a payment without a payment method, so it is
+ * never counted as cash taken.
+ */
+/** "Opening balance (from ledger book)", with the note after a dash when there is one. */
+export function openingBalanceDescription(note?: string): string {
+  const text = note?.trim();
+  return text ? `${OPENING_BALANCE_DESCRIPTION} - ${text}` : OPENING_BALANCE_DESCRIPTION;
+}
+
+export function buildOpeningBalanceEntry(
+  input: OpeningBalanceInput & { id: string; customerId: string }
+): CustomerTransaction {
+  return {
+    id: input.id,
+    customerId: input.customerId,
+    type: input.direction === 'owes' ? 'credit' : 'payment',
+    amount: round2(input.amount),
+    description: openingBalanceDescription(input.note),
+    createdAt: parseLocalDate(input.asOfDate).toISOString(),
+  };
+}
+
+/**
+ * The supplier ledger entry for an opening balance: a positive amount when we owe the supplier,
+ * negative when we paid in advance, dated on the chosen day. The supplier trigger in the database
+ * handles it like any other purchase or payment.
+ */
+export function buildSupplierOpeningEntry(
+  input: OpeningBalanceInput & { id: string; supplierId: string; now?: string }
+): SupplierPurchase {
+  const amount = round2(input.amount);
+  return {
+    id: input.id,
+    supplierId: input.supplierId,
+    description: openingBalanceDescription(input.note),
+    amount: input.direction === 'owes' ? amount : -amount,
+    purchaseDate: input.asOfDate,
+    createdAt: input.now ?? new Date().toISOString(),
+  };
+}
 
 /**
  * What one customer ledger entry does to the customer's totals. Same rules as the database
