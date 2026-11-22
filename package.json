@@ -12,7 +12,8 @@
     "electron:dev": "cross-env ELECTRON_DEV_URL=http://localhost:8080 electron .",
     "electron:start": "npm run build && electron .",
     "icons": "electron scripts/make-icons.cjs",
-    "dist": "npm run build && electron-builder --win nsis portable"
+    "test:logic": "node scripts/run-logic-tests.mjs",
+    "dist": "npm run build && electron-builder --win"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
@@ -78,7 +79,7 @@
     "@vitejs/plugin-react": "^4.3.4",
     "autoprefixer": "^10.4.21",
     "cross-env": "^10.1.0",
-    "electron": "^44.5.1",
+    "electron": "^43.7.9",
     "electron-builder": "^26.15.3",
     "eslint": "^9.32.0",
     "eslint-plugin-react-hooks": "^5.2.0",
@@ -108,8 +109,20 @@
     "win": {
       "icon": "build/icon.ico",
       "target": [
-        "nsis",
-        "portable"
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "ia32"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64",
+            "ia32"
+          ]
+        }
       ]
     },
     "nsis": {
@@ -118,6 +131,7 @@
       "installerHeaderIcon": "build/icon.ico",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
+      "include": "build/installer.nsh",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "artifactName": "${productName}-Setup-${version}.${ext}"
