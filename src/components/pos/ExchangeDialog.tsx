@@ -270,7 +270,7 @@ function ExchangeForm({ order, onClose, onComplete }: { order: Order; onClose: (
                   )}
                 >
                   <div className="min-w-0">
-                    <p className="text-sm font-medium truncate">{l.item.productName}</p>
+                    <p className="text-sm font-medium break-words leading-snug">{l.item.productName}</p>
                     <p className="text-[10px] text-muted-foreground font-mono">
                       {l.item.productSku}
                       {l.returned > 0 && <span className="ml-2 text-warning">{l.returned} returned before</span>}
@@ -366,7 +366,7 @@ function ExchangeForm({ order, onClose, onComplete }: { order: Order; onClose: (
                   className="grid grid-cols-[1fr_110px_90px_70px_90px_36px] gap-2 px-3 py-2 items-center border-t border-border/30"
                 >
                   <div className="min-w-0">
-                    <p className="text-sm font-medium truncate">{l.productName}</p>
+                    <p className="text-sm font-medium break-words leading-snug">{l.productName}</p>
                     <p className="text-[10px] text-muted-foreground font-mono">{l.productSku}</p>
                   </div>
                   <div className="flex items-center justify-center gap-1">

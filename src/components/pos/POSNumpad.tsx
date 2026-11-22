@@ -168,7 +168,7 @@ export function POSNumpad() {
       {lastItem && (
         <div className="mt-auto p-3 bg-primary/5 rounded-xl border border-primary/10">
           <p className="text-[10px] text-muted-foreground uppercase mb-1">Active Item</p>
-          <p className="text-sm font-medium line-clamp-1">{lastItem.product.name}</p>
+          <p className="text-sm font-medium break-words leading-snug">{lastItem.product.name}</p>
           <p className="text-xs text-primary font-bold">Qty: {lastItem.quantity}</p>
         </div>
       )}

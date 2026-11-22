@@ -51,7 +51,7 @@ export function CartItemRow({ item }: CartItemRowProps) {
     <div className="px-4 py-3">
       <div className="flex items-start gap-2">
         <div className="flex-1 min-w-0">
-          <p className="font-medium text-sm truncate">{item.product.name}</p>
+          <p className="font-medium text-sm break-words leading-snug">{item.product.name}</p>
           <p className="text-xs text-muted-foreground font-mono">
             {item.product.sku}
           </p>

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo, startTransition } from 'react';
 import { useStore } from '@/contexts/useStore';
 import { cn } from '@/lib/utils';
 import { Input } from '@/components/ui/input';
@@ -43,7 +43,9 @@ import {
   ArrowLeftRight,
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { Order, PaymentMethod } from '@/types/pos';
+import { Order, PaymentMethod, Product } from '@/types/pos';
+import { recordScanTime } from '@/lib/perfStats';
+import { ProductCard } from '@/components/pos/ProductCard';
 import { format } from 'date-fns';
 import { POSNumpad } from '@/components/pos/POSNumpad';
 import { computeEditedOrderTotals, exchangeShareLines } from '@/lib/orderMath';
@@ -57,6 +59,9 @@ import {
 
 // How many bills Manage Bills lists at once (the newest, or the newest matches of a search).
 const BILL_LIST_LIMIT = 50;
+
+// How many product tiles the grid draws at once; the search narrows the rest down.
+const PRODUCT_GRID_LIMIT = 60;
 
 /** Which way the money went on an exchange, e.g. "Refund PKR 1,100"; null for a normal bill. */
 function exchangeAmountLabel(order: Order): string | null {
@@ -92,7 +97,12 @@ export default function POSTerminal() {
     getCustomerById,
   } = useStore();
 
-  const [searchQuery, setSearchQuery] = useState('');
+  // What the product grid filters by. It trails the search box by ~150 ms (see handleSearchChange).
+  const [gridQuery, setGridQuery] = useState('');
+  const gridDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // addToCart changes on every cart update; the product cards call it through this ref so they stay memoized.
+  const addToCartRef = useRef(addToCart);
+  addToCartRef.current = addToCart;
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [lastOrder, setLastOrder] = useState<Order | null>(null);
@@ -190,62 +200,132 @@ export default function POSTerminal() {
   const editCardFee = editTotals?.cardFeeAmount ?? 0;
   const editTotal = editTotals?.totalAmount ?? 0;
 
-  const filteredProducts = products.filter(
-    (p) =>
-      (p.barcodeEnabled && !!p.barcode && p.barcode.toLowerCase().includes(searchQuery.toLowerCase())) ||
-      p.sku.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      p.name.toLowerCase().includes(searchQuery.toLowerCase())
+  // O(1) lookups for the scan path, rebuilt only when the catalogue changes.
+  const productIndex = useMemo(() => {
+    const byBarcode = new Map<string, Product>(); // barcode scanning enabled
+    const disabledBarcodes = new Set<string>();
+    const bySku = new Map<string, Product>();
+    for (const p of products) {
+      if (p.barcode) {
+        const code = p.barcode.toLowerCase();
+        if (p.barcodeEnabled) byBarcode.set(code, p);
+        else disabledBarcodes.add(code);
+      }
+      bySku.set(p.sku.toLowerCase(), p);
+    }
+    return { byBarcode, disabledBarcodes, bySku };
+  }, [products]);
+
+  // Lowercase search text per product, built once per catalogue change instead of on every keystroke.
+  const searchIndex = useMemo(
+    () =>
+      products.map((product) => ({
+        product,
+        name: product.name.toLowerCase(),
+        key: `${product.name} ${product.sku} ${product.barcodeEnabled && product.barcode ? product.barcode : ''}`.toLowerCase(),
+      })),
+    [products]
   );
+
+  /** Every word of the query must appear (any order); names starting with the query come first. */
+  const runSearch = useCallback(
+    (query: string): Product[] => {
+      const q = query.trim().toLowerCase();
+      if (!q) return searchIndex.map((entry) => entry.product);
+      const words = q.split(/\s+/);
+      const starts: Product[] = [];
+      const rest: Product[] = [];
+      for (const entry of searchIndex) {
+        if (!words.every((w) => entry.key.includes(w))) continue;
+        (entry.name.startsWith(q) ? starts : rest).push(entry.product);
+      }
+      return starts.concat(rest);
+    },
+    [searchIndex]
+  );
+
+  const filteredProducts = useMemo(() => runSearch(gridQuery), [runSearch, gridQuery]);
+  const visibleProducts = useMemo(() => filteredProducts.slice(0, PRODUCT_GRID_LIMIT), [filteredProducts]);
 
   const cartItemsCount = cart.reduce((sum, item) => sum + item.quantity, 0);
 
-  const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter' && searchQuery) {
-      const query = searchQuery.trim().toLowerCase();
-      const barcodeProductAny = products.find(
-        (p) => p.barcode && p.barcode.toLowerCase() === query
-      );
+  const clearSearchBox = () => {
+    if (gridDebounceRef.current) clearTimeout(gridDebounceRef.current);
+    gridDebounceRef.current = null;
+    if (searchInputRef.current) searchInputRef.current.value = '';
+    setGridQuery('');
+  };
 
-      if (barcodeProductAny && !barcodeProductAny.barcodeEnabled) {
-        toast.error('Barcode scanning is disabled for this product');
-        setSearchQuery('');
-        return;
-      }
+  // The box is uncontrolled: a scanner types ~13 characters in ~40 ms, and none of them may re-render
+  // the product grid. The grid only follows after typing pauses.
+  const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    if (gridDebounceRef.current) clearTimeout(gridDebounceRef.current);
+    gridDebounceRef.current = setTimeout(() => {
+      gridDebounceRef.current = null;
+      startTransition(() => setGridQuery(value));
+    }, 150);
+  };
 
-      const product =
-        products.find((p) => p.barcodeEnabled && p.barcode && p.barcode.toLowerCase() === query) ||
-        products.find((p) => p.sku.toLowerCase() === query);
+  useEffect(
+    () => () => {
+      if (gridDebounceRef.current) clearTimeout(gridDebounceRef.current);
+    },
+    []
+  );
 
-      if (product) {
-        if (product.stockQuantity <= 0 && !settings.allowNegativeStock) {
-          toast.error('Out of stock');
-        } else {
-          addToCart(product);
-          toast.success(`Added ${product.name}`);
-        }
-        setSearchQuery('');
-      } else if (filteredProducts.length === 1) {
-        const singleProduct = filteredProducts[0];
-        if (singleProduct.stockQuantity <= 0 && !settings.allowNegativeStock) {
-          toast.error('Out of stock');
-        } else {
-          addToCart(singleProduct);
-          toast.success(`Added ${singleProduct.name}`);
-        }
-        setSearchQuery('');
-      }
+  const addScanned = (product: Product) => {
+    if (product.stockQuantity <= 0 && !settings.allowNegativeStock) {
+      toast.error('Out of stock', { id: 'scan' });
+    } else {
+      addToCart(product);
+      toast.success(`Added ${product.name}`, { id: 'scan' });
     }
   };
 
-  const handleProductClick = (product: typeof products[0]) => {
-    if (product.stockQuantity <= 0 && !settings.allowNegativeStock) {
-      toast.error('Out of stock');
+  const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== 'Enter') return;
+    const raw = e.currentTarget.value;
+    if (!raw) return;
+    const scanStarted = performance.now();
+    // Measured to the first paint after the item reached the cart.
+    const reportScan = () =>
+      requestAnimationFrame(() => setTimeout(() => recordScanTime(performance.now() - scanStarted), 0));
+    const query = raw.trim().toLowerCase();
+
+    if (productIndex.disabledBarcodes.has(query) && !productIndex.byBarcode.has(query)) {
+      toast.error('Barcode scanning is disabled for this product', { id: 'scan' });
+      clearSearchBox();
       return;
     }
-    addToCart(product);
-    toast.success(`Added ${product.name}`);
-    searchInputRef.current?.focus();
+
+    const product = productIndex.byBarcode.get(query) ?? productIndex.bySku.get(query);
+    if (product) {
+      addScanned(product);
+      clearSearchBox();
+      reportScan();
+      return;
+    }
+
+    const matches = runSearch(raw);
+    if (matches.length === 1) {
+      addScanned(matches[0]);
+      clearSearchBox();
+    }
   };
+
+  const handleProductClick = useCallback(
+    (product: Product) => {
+      if (product.stockQuantity <= 0 && !settings.allowNegativeStock) {
+        toast.error('Out of stock', { id: 'scan' });
+        return;
+      }
+      addToCartRef.current(product);
+      toast.success(`Added ${product.name}`, { id: 'scan' });
+      searchInputRef.current?.focus();
+    },
+    [settings.allowNegativeStock]
+  );
 
   const handleCheckoutComplete = (order: Order) => {
     setLastOrder(order);
@@ -502,12 +582,11 @@ export default function POSTerminal() {
       {/* Header with Search */}
       <div className="p-6 border-b border-border/50 bg-background/40 backdrop-blur-md sticky top-0 z-10">
         <div className="relative max-w-3xl mx-auto">
-          <div className="absolute inset-0 bg-primary/20 blur-xl rounded-full opacity-20 animate-pulse" />
           <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-primary" />
           <Input
             ref={searchInputRef}
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            defaultValue=""
+            onChange={handleSearchChange}
             onKeyDown={handleSearchKeyDown}
             placeholder="Scan barcode or search product... (F2)"
             className="pl-12 h-14 text-lg barcode-input bg-muted/50 border-border/50 focus:border-primary/50 focus:ring-primary/20 rounded-xl shadow-inner transition-all"
@@ -561,69 +640,26 @@ export default function POSTerminal() {
       {/* Product Grid */}
       <div className="flex-1 overflow-auto p-6">
         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-          {filteredProducts.map((product) => {
-            const isLowStock =
-              product.stockQuantity > 0 &&
-              product.stockQuantity < product.lowStockThreshold;
-            const isOutOfStock = product.stockQuantity <= 0;
-
-            return (
-              <button
-                key={product.id}
-                onClick={() => handleProductClick(product)}
-                disabled={isOutOfStock && !settings.allowNegativeStock}
-                className="group relative p-4 glass-card rounded-xl text-left hover:bg-primary/5 hover:border-primary/30 transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed flex flex-col overflow-hidden"
-              >
-                <div className="absolute inset-0 bg-gradient-to-br from-primary/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
-                
-                <div className="relative z-10 flex justify-between items-start gap-2 mb-3">
-                  <span className="font-mono text-[10px] text-muted-foreground/70 bg-muted/50 px-1.5 py-0.5 rounded border border-border/50 truncate max-w-[70%]">
-                    {product.sku}
-                  </span>
-                  {isLowStock && (
-                    <Badge variant="outline" className="text-warning border-warning/50 bg-warning/10 text-[10px] px-1.5 h-5">
-                      Low
-                    </Badge>
-                  )}
-                  {isOutOfStock && (
-                    <Badge variant="destructive" className="text-[10px] px-1.5 h-5 shadow-lg shadow-destructive/20">
-                      Out
-                    </Badge>
-                  )}
-                </div>
-                
-                <div className="relative z-10 mb-1 flex items-center justify-between">
-                  <p className="font-medium text-sm line-clamp-1 flex-1 text-foreground/90 group-hover:text-primary transition-colors">
-                    {product.name}
-                  </p>
-                  <span className={cn(
-                    "text-[10px] font-bold px-1.5 py-0.5 rounded-md",
-                    isOutOfStock ? "bg-destructive/20 text-destructive border border-destructive/30" :
-                    isLowStock ? "bg-amber-500/20 text-amber-500 border border-amber-500/30" :
-                    "bg-success/20 text-success border border-success/30"
-                  )}>
-                    Qty: {product.stockQuantity}
-                  </span>
-                </div>
-                
-                <div className="relative z-10 mt-3 flex items-end justify-between">
-                  <p className="text-lg font-bold text-foreground tracking-tight">
-                    {formatPKR(product.sellingPrice)}
-                  </p>
-                  <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center text-primary opacity-0 group-hover:opacity-100 transform translate-y-2 group-hover:translate-y-0 transition-all duration-300">
-                    <ShoppingCart className="w-4 h-4" />
-                  </div>
-                </div>
-              </button>
-            );
-          })}
+          {visibleProducts.map((product) => (
+            <ProductCard
+              key={product.id}
+              product={product}
+              allowNegativeStock={settings.allowNegativeStock}
+              onPick={handleProductClick}
+            />
+          ))}
         </div>
-        {filteredProducts.length === 0 && searchQuery && (
+        {filteredProducts.length > visibleProducts.length && (
+          <p className="text-center text-xs text-muted-foreground mt-4">
+            Showing {visibleProducts.length} of {filteredProducts.length} products. Type more to narrow down.
+          </p>
+        )}
+        {filteredProducts.length === 0 && gridQuery && (
           <div className="text-center text-muted-foreground py-20 flex flex-col items-center gap-4">
             <div className="w-16 h-16 rounded-full bg-muted/50 flex items-center justify-center">
               <Search className="w-8 h-8 opacity-50" />
             </div>
-            <p>No products found for "{searchQuery}"</p>
+            <p>No products found for "{gridQuery}"</p>
           </div>
         )}
       </div>
@@ -887,7 +923,7 @@ export default function POSTerminal() {
                       className="grid grid-cols-[1fr_80px_100px_90px_80px_40px] gap-2 px-3 py-2 items-center border-t border-border/30 hover:bg-muted/20 transition-colors"
                     >
                       <div>
-                        <p className="text-sm font-medium truncate">{item.productName}</p>
+                        <p className="text-sm font-medium break-words leading-snug">{item.productName}</p>
                         <p className="text-[10px] text-muted-foreground font-mono">{item.productSku}</p>
                       </div>
                       <div className="flex items-center justify-center gap-1">

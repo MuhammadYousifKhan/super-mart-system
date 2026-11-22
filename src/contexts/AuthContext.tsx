@@ -3,13 +3,18 @@ import { User, UserRole, UserCredentials } from '@/types/pos';
 import { createClient, type User as SupabaseAuthUser } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
 import { toast } from 'sonner';
+import { logger, serializeError } from '@/lib/logger';
+import { getQueueLength } from '@/lib/syncQueueStore';
 import { AuthContext } from './AuthContextValue';
 
 export interface AuthContextType {
   user: User | null;
   isLoading: boolean;
   login: (email: string, password: string) => Promise<boolean>;
+  /** Signs out this PC only. */
   logout: () => void;
+  /** Signs this account out on every PC (admin "Sign out everywhere"). */
+  logoutEverywhere: () => Promise<void>;
   isAdmin: boolean;
   /** Changes the signed-in user's own name, email (local mode only) or password. */
   updateCredentials: (
@@ -195,12 +200,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [dbUsers, setDbUsers] = useState<ManagedUser[]>([]);
   const hasLoggedProfileTimeout = useRef(false);
   const currentUserRef = useRef<User | null>(null);
+  /** True while the user pressed Logout themselves, so the "signed out by the server" message stays quiet. */
+  const explicitLogoutRef = useRef(false);
 
   // ----------------------------------------------------------
   // LOCAL MODE: simple credential check against localStorage
   // ----------------------------------------------------------
   useEffect(() => {
     currentUserRef.current = user;
+    logger.setUser(user?.email);
   }, [user]);
 
   const fetchAllUsers = useCallback(async () => {
@@ -418,6 +426,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (event === 'INITIAL_SESSION') return;
+      logger.info('auth', `auth event: ${event}`, { explicitLogout: explicitLogoutRef.current });
 
       if (session?.user) {
         const existingUser = currentUserRef.current;
@@ -432,9 +441,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
         await loadUserProfile(session.user.id, session.user.email!, session.user);
       } else {
+        const hadUser = !!currentUserRef.current;
         clearCachedProfile();
         setUser(null);
         setIsLoading(false);
+        if (event === 'SIGNED_OUT' && hadUser && !explicitLogoutRef.current) {
+          logger.warn('auth', 'Signed out by the server, not by the user', { pendingChanges: getQueueLength() });
+          // The server ended this session (signed out on another PC, password changed, token revoked).
+          toast.warning(
+            'You were signed out by the server (signed out on another PC, or the password was changed). Sign in again. Changes not yet uploaded are kept on this PC and will upload after you sign in.',
+            { duration: 15000 }
+          );
+        }
       }
     });
 
@@ -447,6 +465,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // Login
   // ----------------------------------------------------------
   const login = async (email: string, password: string): Promise<boolean> => {
+    explicitLogoutRef.current = false;
     setIsLoading(true);
 
     // LOCAL MODE
@@ -522,7 +541,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // ----------------------------------------------------------
   // Logout
   // ----------------------------------------------------------
-  const logout = async () => {
+  const logout = async (scope: 'local' | 'global' = 'local') => {
+    explicitLogoutRef.current = true;
+    logger.info('auth', 'Logout pressed', { scope });
     // Clear any on-screen messages (e.g. a sync in progress) so none are left over on the login screen.
     toast.dismiss();
     // Forget the saved profile first so the app can never reopen as this user after sign-out.
@@ -536,10 +557,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     let revokedOnServer = true;
     try {
-      const { error } = await supabase.auth.signOut();
+      // 'local' ends only this PC's session. The default (global) would sign the same account
+      // out on every other PC too.
+      const { error } = await supabase.auth.signOut({ scope });
       revokedOnServer = !error;
-    } catch {
+      if (error) logger.warn('auth', 'signOut returned an error', serializeError(error));
+    } catch (err) {
       revokedOnServer = false;
+      logger.warn('auth', 'signOut failed (offline?)', serializeError(err));
     }
 
     if (!revokedOnServer) {
@@ -548,6 +573,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       await supabase.auth.stopAutoRefresh();
       clearStoredSupabaseSession();
     }
+  };
+
+  /** Admin action: ends this account's session on every PC (lost PC, leaked password). */
+  const logoutEverywhere = async () => {
+    await logout('global');
   };
 
   // ----------------------------------------------------------
@@ -755,7 +785,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         user,
         isLoading,
         login,
-        logout,
+        logout: () => logout('local'),
+        logoutEverywhere,
         isAdmin: user?.role === 'admin',
         updateCredentials,
         getUsers,
